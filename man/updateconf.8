@@ -1,0 +1,54 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH UPDATECONF 8
+.SH NAME
+updateconf \- merge .new configuration files after package upgrades
+.SH DESCRIPTION
+.LP
+After a package upgrade, \fBspm\fR(8) leaves updated stock
+configuration files next to the live ones with a \fI.new\fR suffix.
+\fBupdateconf\fR walks the configuration directory, shows a unified
+diff for every \fI*.new\fR file, and interactively asks what to do with
+it:
+.TS
+tab(|);
+l l.
+U|update: replace the live file with the .new version
+D|discard: remove the .new file
+E|edit: open the live file in $EDITOR and ask again
+K|keep: leave both files in place
+.TE
+.LP
+A \fI.new\fR file whose live counterpart no longer exists is removed
+automatically; a \fI.new\fR file with no differences is removed without
+asking.
+
+.SH OPTIONS
+.TP
+\fI<dir>\fR
+Directory to scan (default \fI/etc\fR).
+
+.SH ENVIRONMENT
+.TP
+\fBEDITOR\fR
+Editor used for the \fIedit\fR action (default \fIvi\fR).
+.TP
+\fBAMU_ROOT\fR
+When set to a directory other than \fI/\fR, the scan root is taken
+relative to it.
+
+.SH FILES
+.TP
+\fI/etc\fR
+Default scan directory.
+
+.SH SEE ALSO
+.BR amu (8),
+.BR diff (1)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

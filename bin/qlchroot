@@ -1,0 +1,92 @@
+#!/bin/sh
+#
+# qlchroot - enter a chroot with virtual filesystems mounted
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+
+KEEP=
+while [ "$1" ]; do
+	case "$1" in
+		-k) KEEP=1 ;;
+		-h)
+			printf 'usage: %s [-k] <chroot-dir> [command]\n' "${0##*/}"
+			printf ' -k  keep mounts after exit\n'
+			exit 0 ;;
+		*) break ;;
+	esac
+	shift
+done
+
+if [ "$(id -u)" != 0 ] || [ ! "$1" ]; then
+	printf 'usage: %s [-k] <chroot-dir> [command]\n' "${0##*/}" >&2
+	[ "$(id -u)" = 0 ] || printf '%s\n' "error: root access required." >&2
+	exit 1
+fi
+
+TARGET=$(realpath "$1")
+[ -d "$TARGET" ] || { printf '%s\n' "error: directory '$1' does not exist." >&2; exit 1; }
+shift
+
+if [ "$1" ]; then
+	CMD=$*
+else
+	CMD=/bin/sh
+fi
+
+umountall() {
+	for _i in $(mount | awk '{print $3}' | grep "$TARGET" | tac); do
+		while [ "$(mount | awk '{print $3}' | grep -x "$_i")" ]; do
+			umount "$_i" 2>/dev/null || break
+		done
+	done
+}
+
+if [ -z "$KEEP" ]; then
+	trap umountall 1 2 3 15
+fi
+
+# drop stale mounts from aborted sessions
+umountall 2>/dev/null
+
+if [ -e /sys/firmware/efi/systab ]; then
+	EFIVARS=1
+fi
+
+mount --bind /dev "$TARGET/dev"
+mount -t devpts devpts "$TARGET/dev/pts" -o gid=5,mode=620
+mount -t proc proc "$TARGET/proc"
+mount -t sysfs sysfs "$TARGET/sys"
+if [ -n "$EFIVARS" ] && [ -d "$TARGET/sys/firmware/efi" ]; then
+	mount --bind /sys/firmware/efi/efivars "$TARGET/sys/firmware/efi/efivars"
+fi
+mount -t tmpfs tmpfs "$TARGET/run"
+
+if [ -h "$TARGET/dev/shm" ]; then
+	mkdir -p "$TARGET/$(readlink "$TARGET/dev/shm")"
+fi
+
+if [ -f "$TARGET/etc/resolv.conf" ]; then
+	mv "$TARGET/etc/resolv.conf" "$TARGET/etc/resolv.conf.tmp"
+	backupresolvconf=1
+fi
+cp -L /etc/resolv.conf "$TARGET/etc"
+
+chroot "$TARGET" /usr/bin/env -i \
+	HOME=/root \
+	TERM="$TERM" \
+	PS1='\u:\w\$ ' \
+	PATH=/bin:/usr/bin:/sbin:/usr/sbin $CMD
+
+retval=$?
+
+if [ "$backupresolvconf" = 1 ]; then
+	mv "$TARGET/etc/resolv.conf.tmp" "$TARGET/etc/resolv.conf"
+fi
+
+if [ -z "$KEEP" ]; then
+	umountall
+fi
+
+exit "$retval"

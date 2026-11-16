@@ -1,0 +1,56 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH AMU\-TRIGGER 8
+.SH NAME
+amu\-trigger \- run post-install system cache and database triggers
+.SH DESCRIPTION
+.LP
+\fBamu\-trigger\fR refreshes system caches and databases after packages
+that provide relevant files have been installed or upgraded. It is
+invoked automatically by \fBamu\-bin\fR(8) for every installed or
+upgraded package, and can be run manually after low-level system
+changes.
+.LP
+Each trigger checks that its helper command exists and that at least one
+of the given packages actually provides the relevant files; nothing runs
+otherwise.
+.LP
+Supported triggers:
+.TS
+tab(|);
+l l.
+fontconfig cache|fc\-cache \-sf
+GDK-Pixbuf loaders|gdk\-pixbuf\-query\-loaders \-\-update\-cache
+GIO modules|gio\-querymodules /usr/lib/gio/modules
+GSettings schemas|glib\-compile\-schemas /usr/share/glib\-2.0/schemas
+GTK2 input methods|gtk\-query\-immodules\-2.0 \-\-update\-cache
+GTK3 input methods|gtk\-query\-immodules\-3.0 \-\-update\-cache
+icon themes|gtk\-update\-icon\-cache
+udev hardware database|udevadm hwdb \-\-update
+X font indices|mkfontdir / mkfontscale
+desktop MIME cache|update\-desktop\-database
+shared MIME database|update\-mime\-database /usr/share/mime
+.TE
+
+.SH OPTIONS
+.TP
+\fI<pkg...>\fR
+Run triggers considering only the named installed packages. With no
+arguments, all installed packages are considered.
+
+.SH ENVIRONMENT
+.TP
+\fBAMU_ROOT\fR
+Alternative install root (default \fI/\fR).
+
+.SH SEE ALSO
+.BR amu (8),
+.BR amu\-bin (8),
+.BR amu\-src (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

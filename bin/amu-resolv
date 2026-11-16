@@ -1,0 +1,105 @@
+#!/bin/sh
+#
+# AMU-RESOLV - Qwaderton dependency graph resolver
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+# Single owner of the dependency graph. Resolves against the recipe
+# repositories in $AMU_REPO, the same source of truth used by
+# amu-src(8) and amu-bin(8).
+#
+
+. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+AMU_PROG=amu-resolv
+
+RESOLV_DEPS=
+RESOLV_PROCESS=
+
+resolv_have() {
+	amu_recipe_dir "$1" >/dev/null 2>&1
+}
+
+resolv_visit() {
+	resolv_have "$1" || return 0
+	RESOLV_PROCESS="$RESOLV_PROCESS $1"
+	for _d in $(amu_recipe_deps "$1" "$INCLUDE_MAKEDEPENDS"); do
+		[ "$_d" = "$1" ] && continue
+		if [ "$AMU_RESOLV_SKIP_INSTALLED" ]; then
+			amu_is_installed "$_d" && continue
+		fi
+		amu_list_has "$RESOLV_PROCESS" "$_d" && continue
+		amu_list_has "$RESOLV_DEPS" "$_d" && continue
+		resolv_visit "$_d"
+	done
+	amu_list_has "$RESOLV_DEPS" "$1" || RESOLV_DEPS="$RESOLV_DEPS $1"
+}
+
+resolv_deplist() {
+	for _p in "$@"; do
+		amu_list_has "$RESOLV_DEPS" "$_p" && continue
+		resolv_visit "$_p"
+	done
+	[ "$RESOLV_DEPS" ] && printf '%s\n' $RESOLV_DEPS
+}
+
+resolv_dependents() {
+	[ "$AMU_REPO" ] || amu_die "AMU_REPO is not set"
+	_files=
+	for _r in $AMU_REPO; do
+		_files="$_files $_r"/*/depends
+	done
+	if [ "$INCLUDE_MAKEDEPENDS" ]; then
+		for _r in $AMU_REPO; do
+			_files="$_files $_r"/*/makedepends
+		done
+	fi
+	grep -Fx -- "$1" $_files 2>/dev/null | rev | cut -d / -f 2 | rev
+}
+
+resolv_help() {
+	cat << EOF
+usage: amu-resolv <option> <pkg(s)>
+
+options:
+  -d <pkg>      list direct dependencies
+  -dd <pkg>     list direct dependencies including makedepends
+  -D <pkg(s)>   list all dependencies in install order
+  -DD <pkg(s)>  list all dependencies in install order including makedepends
+  -j <pkg>      list packages that depend on <pkg>
+  -jj <pkg>     list packages that depend on <pkg>, including makedepends
+  -h            print this help message
+
+environment:
+  AMU_REPO                   recipe repository directories
+  AMU_RESOLV_SKIP_INSTALLED  skip installed packages during -D/-DD
+  AMU_ALIAS                  dependency substitution (real:alias pairs)
+  AMU_ROOT                   alternative install root
+
+EOF
+	exit 0
+}
+
+while [ "$1" ]; do
+	case $1 in
+		-d|-dd|-D|-DD|-j|-jj) opt=$1 ;;
+		-h) resolv_help ;;
+		-*) amu_die "invalid option '$1'" ;;
+		*) pkgs="$pkgs $1" ;;
+	esac
+	shift
+done
+
+[ "$opt" ] || resolv_help
+[ "$pkgs" ] || amu_die "no package specified"
+
+case $opt in
+	-d)  for _p in $pkgs; do amu_recipe_deps "$_p"; done ;;
+	-dd) for _p in $pkgs; do amu_recipe_deps "$_p" make; done ;;
+	-D)  resolv_deplist $pkgs ;;
+	-DD) INCLUDE_MAKEDEPENDS=make; resolv_deplist $pkgs ;;
+	-j)  for _p in $pkgs; do resolv_dependents "$_p"; done ;;
+	-jj) INCLUDE_MAKEDEPENDS=make; for _p in $pkgs; do resolv_dependents "$_p"; done ;;
+esac
+
+exit 0

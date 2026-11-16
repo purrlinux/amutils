@@ -1,0 +1,436 @@
+#!/bin/sh
+#
+# AMU-BIN - Qwaderton package manager
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+# The only tool that operates on installed packages and the spm(8)
+# database. Recipe repositories ($AMU_REPO, synced by reposync) are the
+# single source of truth for versions and dependencies; binaries are
+# fetched from $AMU_BINREPO as name#version-release.spm with optional
+# .spm.${AMU_SHA} sidecar checksums.
+#
+
+. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+AMU_PROG=amu-bin
+
+amu_spm() {
+	SPM_ROOT=${AMU_ROOT%/} spm "$@"
+}
+
+bin_pkgid() {
+	_meta=$(amu_recipe_meta "$1") || return 1
+	set -- $_meta
+	printf '%s#%s-%s\n' "$1" "$2" "$3"
+}
+
+bin_verify() {
+	amu_needsha
+	if [ -f "$1.${AMU_SHA}" ]; then
+		_expected=$(awk '{print $1}' "$1.${AMU_SHA}")
+		_actual=$($AMU_SHA "$1" | awk '{print $1}')
+		[ "$_actual" = "$_expected" ] || amu_die "checksum mismatch for ${1##*/}"
+	elif [ "$AMU_STRICT" ]; then
+		amu_die "no .${AMU_SHA} sidecar for ${1##*/}"
+	else
+		amu_msg "warning: no .${AMU_SHA} sidecar for ${1##*/}, skipping verification"
+	fi
+}
+
+bin_fetch() {
+	_name=$1
+	_pkgid=$(bin_pkgid "$_name") || amu_die "no recipe for '$_name'"
+	_file="$_pkgid.spm"
+
+	case $AMU_BINREPO in
+		http://*|https://*|ftp://*)
+			[ "$AMU_CACHE_DIR" ] || amu_die "AMU_CACHE_DIR is not set"
+			mkdir -p "$AMU_CACHE_DIR" 2>/dev/null
+			[ -w "$AMU_CACHE_DIR" ] || amu_die "no write permission on $AMU_CACHE_DIR"
+			_target=$AMU_CACHE_DIR/$_file
+			if [ "$force" ] || [ ! -f "$_target" ]; then
+				_url=$(printf '%s\n' "$_file" | sed 's/#/%23/g')
+				amu_msg "downloading $_file"
+				curl -fL -o "$_target.tmp" "$AMU_BINREPO/$_url" || {
+					rm -f "$_target.tmp"
+					amu_die "failed to download $_file"
+				}
+				if curl -fsL -o "$_target.${AMU_SHA}.tmp" "$AMU_BINREPO/$_url.${AMU_SHA}" 2>/dev/null; then
+					mv "$_target.${AMU_SHA}.tmp" "$_target.${AMU_SHA}"
+				else
+					rm -f "$_target.${AMU_SHA}.tmp"
+				fi
+				mv "$_target.tmp" "$_target"
+			fi
+			;;
+		*)
+			_target=$AMU_BINREPO/$_file
+			[ -f "$_target" ] || amu_die "package file not found: $_target"
+			;;
+	esac
+
+	bin_verify "$_target"
+	printf '%s\n' "$_target"
+}
+
+bin_run_script() {
+	[ "$AMU_SKIP_INSTALL_SCRIPTS" ] && return 0
+	_d=$(amu_recipe_dir "$1" 2>/dev/null) || return 0
+	[ -f "$_d/$2" ] || return 0
+	amu_msg "running $2 for $1"
+	if [ "$AMU_ROOT" != "/" ]; then
+		cat "$_d/$2" > "${AMU_ROOT%/}"/.amu-runscript
+		chmod +x "${AMU_ROOT%/}"/.amu-runscript
+		chroot "${AMU_ROOT%/}" /.amu-runscript || amu_msg "warning: $2 for $1 failed"
+		rm -f "${AMU_ROOT%/}"/.amu-runscript
+	else
+		( cd "$_d" && sh "./$2" ) || amu_msg "warning: $2 for $1 failed"
+	fi
+}
+
+bin_install_file() {
+	_file=$1
+	_name=${_file##*/}
+	_name=${_name%%#*}
+	[ "$AMU_SKIP_PREINSTALL" ] || bin_run_script "$_name" preinstall
+	amu_msg "installing ${_file##*/}"
+	amu_spm -i "$_file" || amu_die "failed to install ${_file##*/}"
+	bin_run_script "$_name" postinstall
+	"$AMU_TRIGGER" "$_name" >/dev/null 2>&1 || true
+}
+
+bin_upgrade_file() {
+	_file=$1
+	_name=${_file##*/}
+	_name=${_name%%#*}
+	[ "$AMU_SKIP_PREINSTALL" ] || bin_run_script "$_name" preinstall
+	amu_msg "upgrading ${_file##*/}"
+	amu_spm -u "$_file" || amu_die "failed to upgrade ${_file##*/}"
+	bin_run_script "$_name" postinstall
+	"$AMU_TRIGGER" "$_name" >/dev/null 2>&1 || true
+}
+
+bin_install() {
+	amu_needroot
+	[ "$1" ] || amu_die "no packages specified"
+
+	_files=
+	_names=
+	for _a; do
+		case $_a in
+			*.spm)
+				[ -f "$_a" ] || amu_die "file not found: $_a"
+				_files="$_files $_a" ;;
+			*) _names="$_names $_a" ;;
+		esac
+	done
+
+	_todo=
+	for _n in $_names; do
+		if amu_is_installed "$_n"; then
+			amu_msg "package '$_n' is already installed. skipping."
+		else
+			_todo="$_todo $_n"
+		fi
+	done
+
+	_deps=
+	if [ "$_todo" ]; then
+		amu_msg "solving dependencies..."
+		_deps=$(AMU_RESOLV_SKIP_INSTALLED=1 "$AMU_RESOLV" -D $_todo) || exit 1
+	fi
+
+	if [ ! "$_deps" ] && [ ! "$_files" ]; then
+		amu_msg "nothing to install."
+		exit 0
+	fi
+
+	amu_msg "installing:$(printf ' %s' $_deps $_files)"
+	amu_prompt
+
+	for _p in $_deps; do
+		_f=$(bin_fetch "$_p") || continue
+		bin_install_file "$_f"
+	done
+	for _f in $_files; do
+		bin_install_file "$_f"
+	done
+}
+
+bin_upgrade() {
+	amu_needroot
+	[ "$1" ] || amu_die "no packages specified"
+
+	for _a; do
+		case $_a in
+			*.spm)
+				[ -f "$_a" ] || amu_die "file not found: $_a"
+				bin_upgrade_file "$_a" ;;
+			*)
+				if ! amu_is_installed "$_a"; then
+					amu_msg "package '$_a' not installed. skipping."
+					continue
+				fi
+				_pkgid=$(bin_pkgid "$_a") || {
+					amu_msg "no recipe for '$_a'. skipping."
+					continue
+				}
+				_installed=$(amu_installed_ver "$_a")
+				_available=${_pkgid#*#}
+				[ "$_installed" = "$_available" ] && \
+					amu_msg "package '$_a' is up to date, reinstalling."
+				_f=$(bin_fetch "$_a") || continue
+				bin_upgrade_file "$_f" ;;
+		esac
+	done
+}
+
+bin_remove() {
+	amu_needroot
+	[ "$1" ] || amu_die "no packages specified"
+
+	_todo=
+	for _p in "$@"; do
+		if amu_is_installed "$_p"; then
+			_todo="$_todo $_p"
+		else
+			amu_msg "package '$_p' is not installed. skipping."
+		fi
+	done
+	[ "$_todo" ] || { amu_msg "nothing to remove."; exit 0; }
+
+	if [ "$AMU_REPO" ]; then
+		for _p in $_todo; do
+			for _d in $("$AMU_RESOLV" -j "$_p" 2>/dev/null); do
+				[ "$_d" = "$_p" ] && continue
+				if amu_is_installed "$_d"; then
+					amu_msg "package '$_p' is required by installed package '$_d'. skipping."
+					_todo=$(printf '%s\n' $_todo | grep -vx "$_p" | tr '\n' ' ')
+					break
+				fi
+			done
+		done
+	else
+		amu_msg "warning: AMU_REPO not set, skipping dependent check"
+	fi
+
+	[ "$_todo" ] || { amu_msg "nothing to remove."; exit 0; }
+	for _p in $_todo; do
+		amu_msg "removing $_p"
+		amu_spm -r "$_p" || amu_die "failed to remove $_p"
+	done
+}
+
+bin_remove_deps() {
+	amu_needroot
+	[ "$1" ] || amu_die "no packages specified"
+
+	_plan=$(amu_removal_plan "$@") || exit 1
+	if [ ! "$_plan" ]; then
+		amu_msg "nothing to remove."
+		exit 0
+	fi
+
+	amu_msg "removing: $_plan"
+	amu_prompt
+
+	for _p in $_plan; do
+		amu_msg "removing $_p"
+		amu_spm -r "$_p" || amu_die "failed to remove $_p"
+	done
+}
+
+bin_sysupgrade() {
+	amu_needroot
+	[ "$AMU_REPO" ] || amu_die "AMU_REPO is not set"
+
+	amu_msg "checking for outdated packages..."
+	_outdated=
+	for _p in $(amu_installed_list); do
+		amu_list_has "$AMU_MASK" "$_p" && continue
+		_meta=$(amu_recipe_meta "$_p" 2>/dev/null) || continue
+		set -- $_meta
+		[ "$1" = "$_p" ] || continue
+		_available="$2-$3"
+		_installed=$(amu_installed_ver "$_p")
+		[ "$_installed" = "$_available" ] && continue
+		_outdated="$_outdated $_p"
+	done
+	[ "$_outdated" ] || { amu_msg "no outdated packages."; exit 0; }
+
+	amu_msg "resolving dependencies..."
+	_all=$("$AMU_RESOLV" -D $_outdated) || exit 1
+
+	_new=
+	_up=
+	for _p in $_all; do
+		if amu_is_installed "$_p"; then
+			_pkgid=$(bin_pkgid "$_p" 2>/dev/null) || continue
+			_installed=$(amu_installed_ver "$_p")
+			_available=${_pkgid#*#}
+			[ "$_installed" = "$_available" ] && continue
+			amu_list_has "$_up" "$_p" || _up="$_up $_p"
+		else
+			amu_list_has "$_new" "$_p" || _new="$_new $_p"
+		fi
+	done
+
+	[ "$_new" ] && amu_msg "installing new package(s): $_new"
+	[ "$_up" ] || { amu_msg "all packages up to date."; exit 0; }
+	amu_msg "upgrading: $_up"
+	amu_prompt
+
+	for _p in $_new; do
+		_f=$(bin_fetch "$_p") || continue
+		bin_install_file "$_f"
+	done
+	for _p in $_up; do
+		_f=$(bin_fetch "$_p") || continue
+		bin_upgrade_file "$_f"
+	done
+
+	amu_msg "system upgrade complete."
+}
+
+bin_download_only() {
+	[ "$1" ] || amu_die "no packages specified"
+	for _p in "$@"; do
+		bin_fetch "$_p"
+	done
+}
+
+bin_clean() {
+	[ "$AMU_CACHE_DIR" ] || amu_die "AMU_CACHE_DIR is not set"
+	[ -d "$AMU_CACHE_DIR" ] || { amu_msg "no downloaded packages to clean."; exit 0; }
+	_count=0
+	for _spm in "$AMU_CACHE_DIR"/*.spm; do
+		[ -f "$_spm" ] || continue
+		[ -f "$_spm.${AMU_SHA}" ] || continue
+		_expected=$(awk '{print $1}' "$_spm.${AMU_SHA}")
+		_actual=$($AMU_SHA "$_spm" | awk '{print $1}')
+		if [ "$_actual" != "$_expected" ]; then
+			amu_msg "removing ${_spm##*/} (checksum mismatch)"
+			rm -f "$_spm"
+			_count=$((_count + 1))
+		fi
+	done
+	amu_msg "removed $_count package(s) with checksum mismatch."
+}
+
+bin_search() {
+	_pattern=$1
+	_seen=
+	for _d in $(amu_all_recipes); do
+		_name=${_d##*/}
+		amu_list_has "$_seen" "$_name" && continue
+		_seen="$_seen $_name"
+		if [ "$_pattern" ]; then
+			printf '%s\n' "$_name" | grep -q "$_pattern" || continue
+		fi
+		if [ "$verbose" ]; then
+			_ver=$( ( . "$_d/abuild" 2>/dev/null; printf '%s' "$version" ) )
+			_rel=$( ( . "$_d/abuild" 2>/dev/null; printf '%s' "$release" ) )
+			_desc=$(amu_recipe_field "$_name" description)
+			printf '%s %s-%s  %s\n' "$_name" "$_ver" "$_rel" "$_desc"
+		else
+			printf '%s\n' "$_name"
+		fi
+	done
+}
+
+bin_help() {
+	cat << EOF
+usage: amu-bin <option> [arg(s)]
+
+options:
+  -i <file.spm | pkg(s)>  install package file(s) or package name(s) with deps
+  -u <file.spm | pkg(s)>  upgrade/reinstall package file(s) or name(s)
+  -r <pkg(s)>             remove package(s) (plain removal)
+  -R <pkg(s)>             remove package(s) with unneeded dependencies
+  -U                      full system upgrade
+  -o <pkg(s)>             download package(s) only
+  -c                      clean downloaded packages with checksum mismatch
+  -Q [pattern]            list installed packages (optional filter)
+  -l <pkg>                list files installed by <pkg>
+  -O <file>               print owner of <file>
+  -s [pattern]            search available packages (by recipe repos)
+  -b <output.spm>         package current directory (fakeroot) into .spm
+  -f                      force re-download of cached packages
+  -v                      verbose output (with -s)
+  -h                      print this help message
+
+environment variables:
+  AMU_BINREPO       binary repository URL or path
+  AMU_CACHE_DIR     download cache directory (required for downloads)
+  AMU_REPO          recipe repository directories (source of truth)
+  AMU_ROOT          alternative install root
+  AMU_NOPROMPT      skip confirmation prompts
+  AMU_MASK          packages to skip during -U
+  AMU_ALIAS         dependency substitution (real:alias pairs)
+  AMU_STRICT        fail when a package has no .${AMU_SHA} sidecar
+
+EOF
+}
+
+_filter_flags() {
+	_args=
+	for _a in "$@"; do
+		case $_a in
+			-f) force=1 ;;
+			-v) verbose=1 ;;
+			*) _args="$_args $_a" ;;
+		esac
+	done
+}
+
+parseopts() {
+	while [ "$1" ]; do
+		case $1 in
+			-i) shift; _filter_flags "$@"; bin_install $_args; exit $? ;;
+			-u) shift; _filter_flags "$@"; bin_upgrade $_args; exit $? ;;
+			-r) shift; bin_remove "$@" ; exit $? ;;
+			-R) shift; bin_remove_deps "$@"; exit $? ;;
+			-U) bin_sysupgrade; exit $? ;;
+			-o) shift; _filter_flags "$@"; bin_download_only $_args; exit $? ;;
+			-c) bin_clean; exit $? ;;
+			-Q) shift
+				if [ "$1" ] && [ "${1#-}" = "$1" ]; then
+					amu_spm -a | grep -- "$1"
+				else
+					amu_spm -a
+				fi
+				exit $? ;;
+			-l) amu_spm -l "$2"; exit $? ;;
+			-O) amu_spm -o "$2"; exit $? ;;
+			-s) _do_search=1
+				if [ "$2" ] && [ "${2#-}" = "$2" ]; then
+					search_pattern=$2
+					shift
+				fi ;;
+			-b) amu_spm -b "$2"; exit $? ;;
+			-f) force=1 ;;
+			-v) verbose=1 ;;
+			-h) bin_help; exit 0 ;;
+			-*) amu_die "invalid option '$1'" ;;
+			*) pkg="$pkg $1" ;;
+		esac
+		shift
+	done
+}
+
+main() {
+	parseopts "$@"
+	if [ "$_do_search" ]; then
+		bin_search "$search_pattern"
+		exit 0
+	fi
+	bin_help
+	exit 0
+}
+
+umask 022
+
+main "$@"
+
+exit 0

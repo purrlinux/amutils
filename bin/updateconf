@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# updateconf - merge .new configuration files after package upgrades
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+
+EDITOR=${EDITOR:-vi}
+DIR=${1:-/etc}
+
+[ "${AMU_ROOT:-/}" != "/" ] && DIR=${AMU_ROOT%/}$DIR
+
+command -v "$EDITOR" >/dev/null || {
+	printf '%s\n' "error: editor '$EDITOR' not found. Set EDITOR." >&2
+	exit 2
+}
+
+[ "$(id -u)" = 0 ] || {
+	printf '%s\n' "error: this operation requires root access." >&2
+	exit 1
+}
+
+pkgnew=$(find "$DIR" -type f -name "*.new" 2>/dev/null)
+
+if [ -z "$pkgnew" ]; then
+	printf '%s\n' "nothing to do."
+	exit 0
+fi
+
+for file in $pkgnew; do
+	currentfile=${file%.*}
+	if [ ! -e "$currentfile" ]; then
+		printf '%s\n' "removing '$file', '$currentfile' does not exist."
+		rm -f "$file"
+		continue
+	fi
+	while true; do
+		clear
+		diff -u "$currentfile" "$file"
+		if [ $? = 0 ]; then
+			printf '%s\n' "removing '$file', no diff found."
+			rm -f "$file"
+			break
+		fi
+		printf '\nfile: %s\n\n[U]pdate [D]iscard [E]dit [K]eep ?: ' "$currentfile"
+		read -r ACTION
+		case $ACTION in
+			U|u)
+				printf '%s\n' "replacing '$currentfile' with '$file'."
+				mv -f "$file" "$currentfile"
+				break ;;
+			D|d)
+				printf '%s\n' "removing '$file'."
+				rm -f "$file"
+				break ;;
+			E|e)
+				"$EDITOR" "$currentfile" ;;
+			K|k)
+				printf '%s\n' "keeping both."
+				break ;;
+		esac
+	done
+done
+
+clear
+printf '%s\n' "done updating package's configuration files."
+
+exit 0

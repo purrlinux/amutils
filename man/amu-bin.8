@@ -1,0 +1,151 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH AMU\-BIN 8
+.SH NAME
+amu\-bin \- Qwaderton Linux package manager (sole spm frontend)
+.SH DESCRIPTION
+.LP
+\fBamu\-bin\fR is the binary package manager for Qwaderton Linux and the
+\fBonly\fR tool that operates on installed packages and the spm(8)
+database. It installs, upgrades and removes \fI.spm\fR packages, fetches
+pre-built binaries from a binary repository, and resolves dependencies.
+.LP
+There is no package index and no database to sync: package metadata
+(name, version, dependencies, description, install scripts) is read
+directly from the recipe repositories in \fBAMU_REPO\fR, which are
+synchronized with \fBreposync\fR(8). This makes the recipe repositories
+the single source of truth for both \fBamu\-src\fR(8) and \fBamu\-bin\fR.
+.LP
+The binary repository \fBAMU_BINREPO\fR is a plain HTTP(S)/FTP server or
+local directory holding \fIname#version-release.spm\fR files with
+optional \fI.spm.sha3\fR sidecar checksum files. The package file name
+is derived from the recipe, so no separate index is needed.
+
+.SH OPTIONS
+.TP
+\fB\-i\fR \fI<target...>\fR
+Install. Each target is either an existing \fI.spm\fR file, installed
+directly, or a package name, resolved against \fBAMU_REPO\fR together
+with its full dependency closure, downloaded from \fBAMU_BINREPO\fR,
+verified against the \fI.spm.sha3\fR sidecar, and installed. Already
+installed packages are skipped. Prompts for confirmation unless
+\fBAMU_NOPROMPT\fR is set. Requires root.
+.TP
+\fB\-u\fR \fI<target...>\fR
+Upgrade or reinstall specific targets. File targets are upgraded
+directly; name targets are re-downloaded from \fBAMU_BINREPO\fR using
+the version from the recipe (reinstalls if already up to date). No
+dependency resolution, no confirmation prompt. Requires root.
+.TP
+\fB\-r\fR \fI<name...>\fR
+Remove packages. Plain removal, no dependency analysis: refuses if the
+package is required by another installed package (spm safety), otherwise
+removes just the named packages. Requires root.
+.TP
+\fB\-R\fR \fI<name...>\fR
+Remove packages together with their dependencies that become unneeded.
+A target that still has installed dependents outside the removal set is
+skipped. Prompts for confirmation unless \fBAMU_NOPROMPT\fR is set.
+Requires root.
+.TP
+\fB\-U\fR
+Full system upgrade. Compares every installed package against the
+version in its recipe (skipping \fBAMU_MASK\fR), resolves the dependency
+closure of the outdated set, installs new dependencies first, then
+upgrades. Prompts for confirmation unless \fBAMU_NOPROMPT\fR is set.
+Requires root.
+.TP
+\fB\-o\fR \fI<name...>\fR
+Download packages into \fBAMU_CACHE_DIR\fR without installing.
+.TP
+\fB\-c\fR
+Clean the download cache: remove cached \fI.spm\fR files whose checksum
+does not match their \fI.spm.sha3\fR sidecar.
+.TP
+\fB\-Q\fR [\fIpattern\fR]
+List installed packages, optionally filtered by name pattern.
+.TP
+\fB\-l\fR \fI<pkg>\fR
+List the files installed by \fI<pkg>\fR.
+.TP
+\fB\-O\fR \fI<file>\fR
+Print the installed package that owns \fI<file>\fR.
+.TP
+\fB\-s\fR [\fIpattern\fR]
+Search available packages in the recipe repositories. Without a pattern,
+lists all packages. With \fB\-v\fR, prints name, version and description.
+.TP
+\fB\-b\fR \fI<output.spm>\fR
+Package the current directory (a populated fakeroot) into the named
+\fI.spm\fR file. Low-level helper used by \fBamu\-src\fR(8); wraps
+\fBspm \-b\fR.
+.TP
+\fB\-v\fR
+Verbose output (with \fB\-s\fR).
+.TP
+\fB\-h\fR
+Print help and exit.
+
+.SH INSTALLATION PIPELINE
+.LP
+For every package it installs or upgrades, \fBamu\-bin\fR runs, in
+order: the recipe's \fIpreinstall\fR script (chrooted under
+\fBAMU_ROOT\fR when set), \fBspm \-i\fR/\fBspm \-u\fR, the recipe's
+\fIpostinstall\fR script, and \fBamu\-trigger\fR(8) for the package.
+\fBamu\-src\fR(8) delegates installation to this pipeline, so source
+builds and binary installs behave identically on the target system.
+
+.SH ENVIRONMENT
+.TP
+\fBAMU_BINREPO\fR
+Binary repository URL (http://, https://, ftp://) or local path.
+Required for name-based installs and upgrades.
+.TP
+\fBAMU_CACHE_DIR\fR
+Directory for downloaded \fI.spm\fR files. Required.
+.TP
+\fBAMU_REPO\fR
+Space-separated recipe repository directories. Source of truth for
+versions and dependencies.
+.TP
+\fBAMU_ROOT\fR
+Alternative install root (default \fI/\fR).
+.TP
+\fBAMU_NOPROMPT\fR
+Skip confirmation prompts.
+.TP
+\fBAMU_MASK\fR
+Packages skipped during \fB\-U\fR.
+.TP
+\fBAMU_ALIAS\fR
+Dependency substitution, \fIreal:alias\fR pairs.
+.TP
+\fBAMU_STRICT\fR
+Fail instead of warning when a downloaded package has no \fI.spm.sha3\fR
+sidecar.
+
+.SH FILES
+.TP
+\fI$AMU_CACHE_DIR\fR
+Downloaded package cache.
+.TP
+\fI${AMU_ROOT}/var/lib/spm/db\fR
+Installed package database (owned by spm).
+.TP
+\fI/etc/amu.conf\fR
+System-wide configuration, sourced by the amu library.
+
+.SH SEE ALSO
+.BR amu (8),
+.BR amu\-src (8),
+.BR amu\-resolv (8),
+.BR amu\-trigger (8),
+.BR reposync (8),
+.BR spm (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

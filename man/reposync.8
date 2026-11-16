@@ -1,0 +1,62 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH REPOSYNC 8
+.SH NAME
+reposync \- synchronize git repositories (Qwaderton Linux repo sync)
+.SH DESCRIPTION
+.LP
+\fBreposync\fR keeps local git checkouts of the distribution repositories
+(recipe repos, build scripts, documentation) up to date. Repositories
+are defined entirely by environment variables, so the tool has no
+configuration file of its own and is safe to run from cron or boot
+scripts.
+.LP
+For each repository: if the target directory is not a git checkout, it
+is cloned (shallow, single branch); otherwise the checkout is fetched,
+hard-reset to the upstream branch, and cleaned of untracked files. When
+the HEAD changes, a diffstat of the update is printed.
+
+.SH OPTIONS
+.TP
+\fB\-n\fR
+Dry run. Print the commands that would run without executing them.
+.TP
+\fB\-l\fR
+Log output to \fI/var/log/reposync.log\fR in addition to stdout.
+.TP
+\fB\-f\fR
+Force: remove existing checkouts before syncing.
+.TP
+\fB\-h\fR
+Print usage and exit.
+
+.SH ENVIRONMENT
+.LP
+Each repository is defined by a variable named \fIREPOSYNC_<name>\fR
+with the value \fIurl|branch|path\fR:
+.RS
+.nf
+
+REPOSYNC_core="https://codeberg.org/qwaderton/core.git|master|/var/repo/core"
+
+.fi
+.RE
+.LP
+All \fIREPOSYNC_*\fR variables found in the environment are processed in
+sorted order.
+
+.SH FILES
+.TP
+\fI/var/log/reposync.log\fR
+Log file used with \fB\-l\fR.
+
+.SH SEE ALSO
+.BR amu (8),
+.BR git (1)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

@@ -1,0 +1,61 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH GENFSTAB 8
+.SH NAME
+genfstab \- generate an fstab(5) from a mounted system
+.SH DESCRIPTION
+.LP
+\fBgenfstab\fR inspects the currently mounted filesystems and prints
+fstab(5) lines for the mounts found under the given root. It is
+typically used when installing or rescuing a system: chroot or mount the
+target, then capture its mounts into \fI/etc/fstab\fR.
+.LP
+Block device mounts are printed with \fBUUID=\fR (default) or
+\fBLABEL=\fR identifiers resolved through \fBblkid\fR(8); bind mounts
+are printed with \fInone\fR as the device and the \fBbind\fR option;
+pseudo filesystems (proc, sysfs, devpts, tmpfs on \fI/run\fR and
+\fI/dev/shm\fR) are listed without device identifiers. Mounts outside
+the given root are ignored.
+.LP
+The result is printed to standard output; redirect it to \fI/etc/fstab\fR
+on the target.
+
+.SH OPTIONS
+.TP
+\fB\-U\fR
+Use UUID identifiers for block devices (default).
+.TP
+\fB\-L\fR
+Use filesystem labels for block devices.
+.TP
+\fB\-s\fR
+Also print pseudo filesystems (proc, sysfs, devpts, tmpfs) explicitly.
+By default only entries that belong in a persistent fstab are printed.
+.TP
+\fI<root>\fR
+Root of the mounted system (default \fI/\fR).
+
+.SH EXAMPLES
+.LP
+Generate fstab for a system mounted at /mnt:
+.RS
+\f(CRgenfstab /mnt > /mnt/etc/fstab\fR
+.RE
+.LP
+Regenerate fstab for the running system using labels:
+.RS
+\f(CRgenfstab \-L / >> /etc/fstab\fR
+.RE
+
+.SH SEE ALSO
+.BR fstab (5),
+.BR mount (8),
+.BR blkid (8),
+.BR qlchroot (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

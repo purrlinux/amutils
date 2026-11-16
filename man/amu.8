@@ -1,0 +1,172 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH AMU 8
+.SH NAME
+amu \- Qwaderton Linux package manager frontend (command router)
+.SH DESCRIPTION
+.LP
+\fBamu\fR is the central command-line frontend for package management on
+Qwaderton Linux. It does no work itself; based on the first option or
+subcommand it exec-delegates to one of the backend tools and passes all
+remaining arguments through unchanged. It never invokes \fBspm\fR(8)
+directly; \fBamu\-bin\fR(8) is the only tool that operates on packages
+and the spm database.
+.TP
+\fBamu\-src\fR(8)
+source builds and recipe utilities: \fB\-w\fR (download source),
+\fB\-p\fR (print recipe path), \fB\-g\fR (update \fI.shasum\fR),
+\fB\-k\fR (update \fI.files\fR), \fB\-s\fR (repo search).
+.TP
+\fBamu\-bin\fR(8)
+package management: \fB\-i\fR (install), \fB\-u\fR (upgrade),
+\fB\-r\fR (remove), \fB\-R\fR (remove with unneeded dependencies),
+\fB\-U\fR (system upgrade), \fB\-Q\fR (query installed),
+\fB\-l\fR (list files), \fB\-O\fR (file owner).
+.TP
+\fBamu\-resolv\fR(8)
+dependency graph queries: \fB\-d\fR, \fB\-dd\fR, \fB\-D\fR, \fB\-DD\fR,
+\fB\-j\fR, \fB\-jj\fR.
+.TP
+\fBamu\-trigger\fR(8)
+post-install system cache/database triggers.
+
+.SH ROUTING TABLE
+.TS
+tab(|);
+l l l.
+\fBfirst option\fR|\fBbackend\fR|\fBaction\fR
+_
+\-w, \-p, \-g, \-k|amu\-src|source build utilities
+\-s|amu\-bin|repo search
+\-d, \-dd|amu\-resolv|direct dependencies
+\-D, \-DD|amu\-resolv|dependency closure
+\-j, \-jj|amu\-resolv|dependents
+\-r, \-R|amu\-bin|remove
+\-U|amu\-bin|system upgrade
+\-o, \-c|amu\-bin|download, cache clean
+\-Q, \-l, \-O|amu\-bin|installed package queries
+\-i, \-u|(see below)|install/upgrade
+.TE
+
+.SH CONTEXT ROUTING
+.TP
+No arguments
+If the current directory contains an \fIabuild\fR recipe file, the call
+is routed to \fBamu\-src\fR and the package is built from source.
+Otherwise the help message is printed.
+.TP
+\fB\-i\fR and \fB\-u\fR
+The router inspects the arguments and decides whether to build from
+source or to install a pre-built binary:
+.RS
+.IP \(bu 2
+an argument naming an existing \fI.spm\fR file is routed to
+\fBamu\-bin\fR, which installs/upgrades the file directly;
+.IP \(bu 2
+an argument naming a package that has a recipe in \fBAMU_REPO\fR is
+routed to \fBamu\-src\fR, which builds the package and then hands the
+resulting \fI.spm\fR to \fBamu\-bin\fR for installation;
+.IP \(bu 2
+an argument naming a package with no recipe is routed to
+\fBamu\-bin\fR, which downloads the binary from \fBAMU_BINREPO\fR;
+.IP \(bu 2
+with no arguments and an \fIabuild\fR file in the current directory,
+the current recipe is built and installed.
+.RE
+
+.SH SUBCOMMANDS
+.TS
+tab(|);
+l l.
+\fBamu trigger\fR [pkg...]|run post-install triggers
+\fBamu purge\fR [--do-it] pkg...|removal plan for pkg plus unneeded deps
+\fBamu orphan\fR|installed packages without dependents
+\fBamu foreign\fR|installed packages missing from repos
+\fBamu mdpurge\fR [--do-it] [pkg...]|orphaned makedepends (all if no pkg)
+\fBamu clean\fR [\-p] [\-s]|stale .spm files or sources on stdout
+\fBamu deps\fR pkg|runtime library dependencies via ldd(1)
+\fBamu redundantdeps\fR [\-f] [pkg]|transitive deps listed in depends
+\fBamu genabuild\fR url [name]|scaffold a recipe directory from a URL
+\fBamu revdep\fR [\-v]|packages with broken ELF library links
+.TE
+.LP
+\fBamu purge\fR and \fBamu mdpurge\fR print the removal plan by default;
+pass \fB\-\-do\-it\fR to actually remove (via \fBamu\-bin\fR).
+
+.SH ENVIRONMENT
+.LP
+Configuration is passed through to the backend tools. See
+\fBamu\-src\fR(8) (\fBAMU_REPO\fR, \fBAMU_PACKAGE_DIR\fR,
+\fBAMU_SOURCE_DIR\fR, \fBAMU_WORK_DIR\fR, \fBAMU_ROOT\fR,
+\fBAMU_NOPROMPT\fR, \fBAMU_KEEP_WORKDIR\fR), \fBamu\-bin\fR(8)
+(\fBAMU_BINREPO\fR, \fBAMU_CACHE_DIR\fR, \fBAMU_MASK\fR,
+\fBAMU_ALIAS\fR, \fBAMU_STRICT\fR) and \fBamu\-resolv\fR(8).
+System-wide defaults are read from \fI/etc/amu.conf\fR.
+
+.SH EXAMPLES
+.LP
+Install a package by name (build from source if a recipe exists,
+otherwise download the binary):
+.RS
+\f(CRamu \-i firefox\fR
+.RE
+.LP
+Install a pre-built package file:
+.RS
+\f(CRamu \-i firefox#128.0\-1.spm\fR
+.RE
+.LP
+Build and install the recipe in the current directory:
+.RS
+\f(CRcd repo/mypkg && amu \-i\fR
+.RE
+.LP
+Full system upgrade:
+.RS
+\f(CRamu \-U\fR
+.RE
+.LP
+Remove a package together with its unneeded dependencies:
+.RS
+\f(CRamu \-R firefox\fR
+.RE
+.LP
+Show the dependency tree of a package:
+.RS
+\f(CRamu \-DD firefox\fR
+.RE
+.LP
+List all installed packages:
+.RS
+\f(CRamu \-Q\fR
+.RE
+.LP
+Find which installed package owns a file:
+.RS
+\f(CRamu \-O /usr/lib/libpng.so\fR
+.RE
+.LP
+Preview then perform a purge:
+.RS
+\f(CRamu purge firefox\fR
+.br
+\f(CRamu purge \-\-do\-it firefox\fR
+.RE
+
+.SH SEE ALSO
+.BR amu\-bin (8),
+.BR amu\-src (8),
+.BR amu\-resolv (8),
+.BR amu\-trigger (8),
+.BR reposync (8),
+.BR updateconf (8),
+.BR genfstab (8),
+.BR qlchroot (8),
+.BR spm (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

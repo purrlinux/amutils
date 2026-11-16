@@ -1,0 +1,69 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH AMU\-RESOLV 8
+.SH NAME
+amu\-resolv \- Qwaderton Linux dependency graph resolver
+.SH DESCRIPTION
+.LP
+\fBamu\-resolv\fR is the single owner of the dependency graph. It
+resolves package dependencies against the recipe repositories in
+\fBAMU_REPO\fR (synchronized with \fBreposync\fR(8)), which are the
+same repositories \fBamu\-src\fR(8) builds from and \fBamu\-bin\fR(8)
+uses as its source of truth, so dependency resolution is identical for
+source builds and binary installs.
+.LP
+Dependencies come from the \fIdepends\fR and \fImakedepends\fR files
+next to each recipe, with \fBAMU_ALIAS\fR substitution applied.
+
+.SH OPTIONS
+.TP
+\fB\-d\fR \fI<pkg>\fR
+Print the direct dependencies of \fI<pkg>\fR, one per line.
+.TP
+\fB\-dd\fR \fI<pkg>\fR
+Like \fB\-d\fR, but includes \fImakedepends\fR.
+.TP
+\fB\-D\fR \fI<pkg...>\fR
+Print the full dependency closure of the named packages in install
+order (dependencies before dependents), one per line.
+.TP
+\fB\-DD\fR \fI<pkg...>\fR
+Like \fB\-D\fR, but includes \fImakedepends\fR.
+.TP
+\fB\-j\fR \fI<pkg>\fR
+Print the packages that directly depend on \fI<pkg>\fR (reverse
+dependencies, "dependents").
+.TP
+\fB\-jj\fR \fI<pkg>\fR
+Like \fB\-j\fR, but also considers \fImakedepends\fR.
+.TP
+\fB\-h\fR
+Print help and exit.
+
+.SH ENVIRONMENT
+.TP
+\fBAMU_REPO\fR
+Space-separated recipe repository directories. Required.
+.TP
+\fBAMU_RESOLV_SKIP_INSTALLED\fR
+Skip already-installed packages during \fB\-D\fR/\fB\-DD\fR traversal.
+Used internally by \fBamu\-bin\fR(8).
+.TP
+\fBAMU_ALIAS\fR
+Dependency substitution, \fIreal:alias\fR space-separated pairs.
+.TP
+\fBAMU_ROOT\fR
+Alternative install root used to locate the installed package database
+(default \fI/\fR).
+
+.SH SEE ALSO
+.BR amu (8),
+.BR amu\-bin (8),
+.BR amu\-src (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

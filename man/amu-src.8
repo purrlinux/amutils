@@ -1,0 +1,153 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH AMU\-SRC 8
+.SH NAME
+amu\-src \- build Qwaderton Linux packages from source recipes
+.SH DESCRIPTION
+.LP
+\fBamu\-src\fR builds \fI.spm\fR packages from \fIabuild\fR recipes, in
+the role of a makepkg-style source build tool. It reads a recipe (a
+POSIX shell snippet defining the package name, version, sources and
+optional build hooks), downloads and verifies source tarballs,
+auto-detects one of the supported build systems, compiles the software,
+post-processes the result (compresses man pages, strips binaries,
+removes static libraries, locales and documentation, installs runit
+services), and packages the fakeroot into an \fI.spm\fR archive.
+.LP
+\fBamu\-src\fR never modifies the target system and never invokes
+\fBspm\fR(8) directly: packaging is delegated to \fBamu\-bin \-b\fR, and
+installation (with \fB\-i\fR/\fB\-u\fR) is delegated to \fBamu\-bin\fR(8)
+after a successful build. Recipe metadata, searching and dependency
+resolution are shared with \fBamu\-bin\fR(8) through the recipe
+repositories synchronized by \fBreposync\fR(8).
+
+.SH OPTIONS
+.TP
+\fB\-i\fR [\fIpkg...\fR]
+Build and install. With no arguments, builds the recipe in the current
+directory; with arguments, builds each named package found in
+\fBAMU_REPO\fR. The built package is handed to \fBamu\-bin \-i\fR.
+The recipe's \fIpreinstall\fR script runs before the build; the
+\fIpostinstall\fR script and system triggers run on the \fBamu\-bin\fR
+side after installation.
+.TP
+\fB\-u\fR [\fIpkg...\fR]
+Rebuild and upgrade. Like \fB\-i\fR, but hands the package to
+\fBamu\-bin \-u\fR; refuses if the package is not installed.
+.TP
+\fB\-f\fR
+Force rebuild even if the package file already exists.
+.TP
+\fB\-w\fR [\fIpkg...\fR]
+Download source tarballs only.
+.TP
+\fB\-p\fR \fI<pkg...>\fR
+Print the recipe directory path of each package.
+.TP
+\fB\-g\fR [\fIpkg...\fR]
+Regenerate the \fI.shasum\fR checksum file.
+.TP
+\fB\-k\fR [\fIpkg...\fR]
+Regenerate the \fI.files\fR package file list.
+.TP
+\fB\-s\fR [\fIpattern\fR]
+Search packages in the recipe repositories. With \fB\-v\fR, prints name
+and version.
+.TP
+\fB\-v\fR
+Verbose output (with \fB\-s\fR).
+.TP
+\fB\-h\fR
+Print help and exit.
+
+.SH RECIPES
+.LP
+A recipe lives in a directory named after the package and contains an
+\fIabuild\fR file defining at least:
+.RS
+.nf
+
+name=mypkg
+version=1.2.3
+release=1
+source="https://example.com/$name-$version.tar.gz"
+
+.fi
+.RE
+.LP
+The \fIsource\fR variable accepts remote URLs, \fIname::url\fR renames,
+\fIurl::noextract\fR markers, local files, and may be empty for dummy
+packages. Optional variables: \fIbuild_opt\fR, \fIbuild_type\fR (force a
+build system), \fIbuild_dir\fR, \fIsv\fR (runit services),
+\fIskip_patch\fR, \fIpatch_opt\fR, \fIkeep_static\fR, \fIkeep_libtool\fR,
+\fIkeep_locale\fR, \fIkeep_doc\fR, \fIno_strip\fR, \fIsafely_rebuildable\fR.
+.LP
+A \fBbuild()\fR function in the recipe replaces the auto-detected build
+system entirely; otherwise \fBprebuild()\fR and \fBpostbuild()\fR hooks
+run around it. When the version is unchanged and the recipe sets
+\fIsafely_rebuildable\fR, a \fBrebuild()\fR function runs instead of a
+full rebuild.
+.LP
+Companion files: \fIdepends\fR (runtime dependencies, one per line),
+\fImakedepends\fR (build-time dependencies), \fIinfo\fR (metadata),
+\fIpreinstall\fR, \fIpostinstall\fR, \fI.shasum\fR (source checksums),
+\fI.files\fR (package file list). See \fBamu-resolv\fR(8) for how
+dependencies are resolved.
+.LP
+Build systems are auto-detected in this order: \fBmeson.build\fR (muon),
+\fBconfigure\fR, \fBCMakeLists.txt\fR, \fBsetup.py\fR, \fBMakefile.PL\fR,
+\fBMakefile\fR. The exact flags are documented in the package
+documentation under \fI/usr/share/doc/amutils\fR.
+
+.SH ENVIRONMENT
+.TP
+\fBAMU_REPO\fR
+Space-separated recipe repository directories (required for named
+package operations and \fB\-s\fR).
+.TP
+\fBAMU_PACKAGE_DIR\fR
+Directory for built \fI.spm\fR files (default: current directory).
+.TP
+\fBAMU_SOURCE_DIR\fR
+Source tarball cache directory (default: current directory).
+.TP
+\fBAMU_WORK_DIR\fR
+Build working tree, extraction and fakeroot location (default: current
+directory).
+.TP
+\fBAMU_ROOT\fR
+Alternative install root, passed through to \fBamu\-bin\fR.
+.TP
+\fBAMU_NOPROMPT\fR
+Skip the \fBamu\-bin\fR confirmation prompt.
+.TP
+\fBAMU_KEEP_WORKDIR\fR
+Keep the build tree on failure (for debugging).
+.TP
+\fBAMU_LOG\fR, \fBAMU_LOG_DIR\fR
+Enable build logging; log file is \fI$AMU_LOG_DIR/$name.log\fR.
+.TP
+\fBCFLAGS\fR, \fBCXXFLAGS\fR
+Compiler flags (used by the cmake build system).
+.TP
+\fBCROSS_COMPILE\fR
+Toolchain prefix for \fBstrip\fR (e.g. \fIx86_64-linux-musl-\fR).
+
+.SH FILES
+.TP
+\fI/etc/amu.conf\fR
+System-wide configuration, sourced by the amu library.
+
+.SH SEE ALSO
+.BR amu (8),
+.BR amu\-bin (8),
+.BR amu\-resolv (8),
+.BR amu\-trigger (8),
+.BR reposync (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

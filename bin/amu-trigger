@@ -1,0 +1,142 @@
+#!/bin/sh
+#
+# AMU-TRIGGER - Qwaderton post-install system triggers
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+# Refreshes system caches/databases for packages that provide relevant
+# files. Invoked by amu-bin(8) after every install/upgrade; can be run
+# manually after low-level system changes.
+#
+
+. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+AMU_PROG=amu-trigger
+
+_trigger_fccache() {
+	command -v fc-cache >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/fonts/ && {
+		amu_msg "updating fontconfig cache..."
+		fc-cache -sf
+	}
+}
+
+_trigger_gdkpixbufcache() {
+	command -v gdk-pixbuf-query-loaders >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/ && {
+		amu_msg "probing GDK-Pixbuf loader modules..."
+		gdk-pixbuf-query-loaders --update-cache
+	}
+}
+
+_trigger_giomodules() {
+	command -v gio-querymodules >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/lib/gio/modules/ && {
+		amu_msg "updating GIO module cache..."
+		gio-querymodules /usr/lib/gio/modules
+	}
+}
+
+_trigger_glibschema() {
+	command -v glib-compile-schemas >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/glib-2.0/schemas/ && {
+		amu_msg "compiling GSettings XML schema files..."
+		glib-compile-schemas /usr/share/glib-2.0/schemas
+	}
+}
+
+_trigger_gtk2immodules() {
+	command -v gtk-query-immodules-2.0 >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/lib/gtk-2.0/2.10.0/immodules/ && {
+		amu_msg "probing GTK2 input method modules..."
+		gtk-query-immodules-2.0 --update-cache
+	}
+}
+
+_trigger_gtk3immodules() {
+	command -v gtk-query-immodules-3.0 >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/lib/gtk-3.0/3.0.0/immodules/ && {
+		amu_msg "probing GTK3 input method modules..."
+		gtk-query-immodules-3.0 --update-cache
+	}
+}
+
+_trigger_iconcache() {
+	command -v gtk-update-icon-cache >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/icons/ && {
+		amu_msg "updating icon theme caches..."
+		for _dir in /usr/share/icons/*; do
+			if [ -e "$_dir/index.theme" ]; then
+				gtk-update-icon-cache -q "$_dir" 2>/dev/null
+			else
+				rm -f "$_dir/icon-theme.cache"
+				rmdir --ignore-fail-on-non-empty "$_dir" 2>/dev/null
+			fi
+		done
+	}
+}
+
+_trigger_udevdb() {
+	command -v udevadm >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^etc/udev/hwdb.d/ && {
+		amu_msg "updating hardware database..."
+		udevadm hwdb --update
+	}
+}
+
+_trigger_fontcache() {
+	command -v mkfontdir >/dev/null || return 0
+	command -v mkfontscale >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/fonts/ && {
+		amu_msg "updating X fontdir indices..."
+		for _dir in $(find /usr/share/fonts -maxdepth 1 -type d ! -path /usr/share/fonts); do
+			rm -f "$_dir/fonts.scale" "$_dir/fonts.dir" "$_dir/.uuid"
+			rmdir --ignore-fail-on-non-empty "$_dir" 2>/dev/null
+			[ -d "$_dir" ] || continue
+			mkfontdir "$_dir"
+			mkfontscale "$_dir"
+		done
+	}
+}
+
+_trigger_desktopdb() {
+	command -v update-desktop-database >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/applications/ && {
+		amu_msg "updating desktop file MIME type cache..."
+		update-desktop-database --quiet
+	}
+}
+
+_trigger_mimedb() {
+	command -v update-mime-database >/dev/null || return 0
+	"$AMU_BIN" -l "$1" | grep -q ^usr/share/mime/ && {
+		amu_msg "updating the MIME type database..."
+		update-mime-database /usr/share/mime
+	}
+}
+
+main() {
+	amu_needroot
+
+	if [ "$1" ]; then
+		_pkgs=$*
+	else
+		_pkgs=$("$AMU_BIN" -Q)
+	fi
+
+	for _t in mimedb desktopdb fontcache fccache udevdb iconcache \
+	          gtk3immodules gtk2immodules glibschema giomodules gdkpixbufcache; do
+		for _p in $_pkgs; do
+			"_trigger_$_t" "$_p" && break
+		done
+	done
+}
+
+if [ "$1" = "-h" ]; then
+	printf 'usage: amu-trigger [pkg...]\n'
+	exit 0
+fi
+
+main "$@"
+
+exit 0

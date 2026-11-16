@@ -1,0 +1,58 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.TH QLCHROOT 8
+.SH NAME
+qlchroot \- enter a Qwaderton Linux chroot with virtual filesystems mounted
+.SH DESCRIPTION
+.LP
+\fBqlchroot\fR runs a command inside a directory prepared as a system
+root, bind-mounting the virtual filesystems first and unmounting them
+afterwards: \fI/dev\fR, \fI/dev/pts\fR, \fI/proc\fR, \fI/sys\fR,
+\fI/run\fR (as tmpfs), and \fI/sys/firmware/efi/efivars\fR on EFI
+systems. The target's \fI/etc/resolv.conf\fR is temporarily replaced
+with the host's so name resolution works inside the chroot; the
+original is restored on exit.
+.LP
+The command runs with a clean environment (\fIenv \-i\fR) and a minimal
+\fBPATH\fR. If no command is given, \fI/bin/sh\fR is started
+interactively.
+.LP
+All mounts are torn down on exit, including when the command is
+interrupted (SIGINT/SIGTERM); stale mounts from aborted sessions are
+unmounted before new ones are added.
+
+.SH OPTIONS
+.TP
+\fB\-k\fR
+Keep mounts after the command exits (for inspection or nested chroots).
+.TP
+\fI<dir>\fR
+Directory to chroot into.
+.TP
+\fI[command...]\fR
+Command to run inside the chroot (default: \fI/bin/sh\fR).
+
+.SH EXAMPLES
+.LP
+Enter a chroot for maintenance:
+.RS
+\f(CRqlchroot /mnt\fR
+.RE
+.LP
+Run a single command and keep the mounts for a follow-up session:
+.RS
+\f(CRqlchroot \-k /mnt /usr/bin/amu \-U\fR
+.RE
+
+.SH SEE ALSO
+.BR chroot (1),
+.BR mount (8),
+.BR genfstab (8),
+.BR amu (8)
+
+.SH AUTHORS
+.LP
+Atarwn Gard \c
+.MT atarwn@qwaderton.org
+.ME
+.LP
+inspired by autils by emmett1

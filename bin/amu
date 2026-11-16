@@ -1,0 +1,129 @@
+#!/bin/sh
+#
+# AMU - Qwaderton package manager frontend (command router)
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+# Does no work itself; exec-delegates to the backend tools. Never
+# invokes spm(8) directly; amu-bin(8) is the only tool that operates
+# on packages and the spm database.
+#
+
+. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+AMU_PROG=amu
+
+amu_help() {
+	cat << 'EOF'
+usage: amu <option> [arg(s)] | amu <subcommand> [arg(s)]
+
+command router - delegates to the proper backend tool:
+
+  amu-src:     -w          download source only
+               -p <pkg(s)>  print package recipe path
+               -g <pkg(s)>  update .shasum checksums
+               -k <pkg(s)>  update .files package file list
+
+  amu-bin:     -i <target(s)>  install file.spm or name(s) (with deps)
+               -u <target(s)>  upgrade/reinstall
+               -r <pkg(s)>     remove (plain)
+               -R <pkg(s)>     remove with unneeded dependencies
+               -U              full system upgrade
+               -Q [pattern]    list installed packages
+               -l <pkg>        list files of installed package
+               -O <file>       print owner of file
+               -s [pattern]    search available packages
+               -o <pkg(s)>     download only
+               -c              clean download cache
+
+  amu-resolv:  -d/-dd <pkg>     list <pkg> dependencies
+               -D/-DD <pkg(s)> list all dependencies in order
+               -j/-jj <pkg>    list all dependents
+
+  amu trigger [pkg(s)]   run post-install triggers
+
+subcommands:
+  purge [--do-it] <pkg(s)>    removal plan for pkg plus unneeded deps
+  orphan                      installed packages without dependents
+  foreign                     installed packages missing from repos
+  mdpurge [--do-it] [pkg(s)]  orphaned makedepends
+  clean [-p|-s]               stale .spm files or sources (pipe to xargs rm)
+  deps <pkg>                  runtime library dependencies (ldd)
+  redundantdeps [-f] [pkg(s)] transitive deps listed in depends
+  genabuild <url> [name]      scaffold a recipe directory
+  revdep [-v]                 packages with broken ELF library links
+
+notes:
+  - 'amu' with no arguments builds the package from the current
+    directory if an 'abuild' file is present (via amu-src).
+  - 'amu -i/-u' routes by context: an .spm file goes to amu-bin, a
+    name with a recipe in AMU_REPO is built by amu-src, any other
+    name is downloaded from AMU_BINREPO by amu-bin.
+
+environment variables: see amu-src(8), amu-bin(8) and amu-resolv(8)
+
+EOF
+}
+
+# -i/-u: context routing between source build and binary install
+route_iu() {
+	_opt=$1
+	shift
+
+	if [ ! "$1" ]; then
+		if [ -f ./abuild ]; then
+			exec amu-src "$_opt"
+		fi
+		amu_die "nothing to $_opt: no package given and no abuild in current directory"
+	fi
+
+	for _a; do
+		case $_a in
+			-*) continue ;;
+		esac
+		if [ -f "$_a" ]; then
+			exec amu-bin "$_opt" "$@"
+		fi
+		break
+	done
+
+	_src=
+	_bin=
+	for _a; do
+		case $_a in
+			-*) continue ;;
+		esac
+		if amu_recipe_dir "$_a" >/dev/null 2>&1; then
+			_src="$_src $_a"
+		else
+			_bin="$_bin $_a"
+		fi
+	done
+
+	if [ "$_src" ] && [ "$_bin" ]; then
+		amu-src "$_opt" $_src || exit 1
+		exec amu-bin "$_opt" $_bin
+	fi
+	[ "$_src" ] && exec amu-src "$_opt" $_src
+	[ "$_bin" ] && exec amu-bin "$_opt" $_bin
+	amu_die "nothing to $_opt"
+}
+
+case $1 in
+	-h) amu_help; exit 0 ;;
+	'') [ -f ./abuild ] && exec amu-src; amu_help; exit 0 ;;
+	-w|-p|-g|-k) exec amu-src "$@" ;;
+	-s|-r|-R|-U|-o|-c|-Q|-l|-O) exec amu-bin "$@" ;;
+	-d|-dd|-D|-DD|-j|-jj) exec amu-resolv "$@" ;;
+	-i|-u) route_iu "$@" ;;
+	trigger) shift; exec amu-trigger "$@" ;;
+	purge|orphan|foreign|mdpurge|clean|deps|redundantdeps|genabuild|revdep)
+		_cmd=$1
+		shift
+		"amu_cmd_$_cmd" "$@"
+		exit $? ;;
+	-*) amu_die "invalid option '$1'" ;;
+	*) amu_die "invalid argument '$1'" ;;
+esac
+
+exit 0

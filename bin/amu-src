@@ -1,0 +1,726 @@
+#!/bin/sh
+#
+# AMU-SRC - Qwaderton source build tool
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+# Builds .spm packages from abuild recipes. Does not touch the target
+# system: packaging is delegated to 'amu-bin -b', installation to
+# 'amu-bin -i/-u'.
+#
+
+. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+AMU_PROG=amu-src
+
+msg() {
+	if [ -t 1 ]; then
+		ttysize=$(stty size 2>/dev/null | awk '{print $2}')
+	fi
+	printf '%s\n' "[$name] $*" | fold -sw "${ttysize:-80}"
+}
+
+buildstatus() {
+	[ "$?" = 0 ] || {
+		msg "build package '$name-$version-$release' failed on '$1'."
+		ret 1
+	}
+}
+
+ret() {
+	[ "$AMU_KEEP_WORKDIR" ] || [ "$safely_rebuildable" ] || remove_workdir
+	exit "${1:-0}"
+}
+
+die() {
+	[ "$1" ] && printf '%s\n' "error: $1" >&2
+	ret 1
+}
+
+prepare_workdir() {
+	export SRC=$AMU_WORK_DIR/amu-src-${PWD##*/}
+	export PKG=$AMU_WORK_DIR/amu-pkg-${PWD##*/}
+
+	rebuild_mode=
+	if [ "$safely_rebuildable" ] && [ ! "$forcerebuild" ] && \
+	   [ -f $HERE/.amu-version ] && [ "$(cat $HERE/.amu-version)" = "$version-$release" ] && \
+	   [ -d "$SRC" ]; then
+		rebuild_mode=1
+		msg "version unchanged ($version-$release), running rebuild()"
+	else
+		remove_workdir
+		mkdir -p "$PKG" "$SRC"
+	fi
+}
+
+remove_workdir() {
+	rm -rf "$PKG" "$SRC"
+}
+
+fetch_src() {
+	[ "$source" ] || return 0
+	for _i in $source; do
+		unset resume
+		_i=${_i%::noextract}
+		case $_i in
+			*::*) _sn=${_i%::*} ;;
+			*) _sn=${_i##*/} ;;
+		esac
+		case ${_i#*::} in
+			http://*|https://*|ftp://*)
+				if [ ! -f $AMU_SOURCE_DIR/$_sn ]; then
+					[ -f $AMU_SOURCE_DIR/$_sn.tmp ] && resume="-C -"
+					msg "fetching ${_i#*::}"
+					curl $resume --fail --retry 3 --retry-delay 3 -L -o $AMU_SOURCE_DIR/$_sn.tmp "${_i#*::}" || {
+						msg "failed downloading source '$_sn'."
+						exit 1
+					}
+					mv $AMU_SOURCE_DIR/$_sn.tmp $AMU_SOURCE_DIR/$_sn
+				fi ;;
+		esac
+	done
+}
+
+extract_src() {
+	prepare_workdir
+	[ "$rebuild_mode" ] && return 0
+	[ "$source" ] || return 0
+	checksource
+	for _i in $source; do
+		case $_i in
+			*/*) _S=$AMU_SOURCE_DIR ;;
+			*) _S=$HERE ;;
+		esac
+		case ${_i%::noextract} in
+			*::*) _sn=${_i%%::*} ;;
+			*) _sn=${_i##*/}; _sn=${_sn%::noextract} ;;
+		esac
+		case $_i in
+			*::noextract)
+				cp "$_S/$_sn" "$SRC" || { msg "failed copy '$_S/$_sn' to '$SRC'."; ret 1; } ;;
+			*.tar.bz2|*.tar.gz|*.tar.lz|*.tar.lzma|*.tar.lzo|*.tar.xz|*.tar.Z|*.tb2|*.tbz|*.tbz2|*.tz2|*.taz|*.tgz|*.tlz|*.txz|*.tZ|*.taZ)
+				msg "unpacking '$_S/$_sn'..."
+				tar -p -o -C "$SRC" -xf "$_S/$_sn" || {
+					msg "failed unpacking source '${_i##*/}'."
+					ret 1
+				} ;;
+			*)
+				cp "$_S/$_sn" "$SRC" || {
+					msg "failed copy '$_S/$_sn' to '$SRC'."
+					ret 1
+				} ;;
+		esac
+	done
+}
+
+detect_buildtype() {
+	if [ -f meson.build ]; then
+		build_type=muon_build
+	elif [ -f configure ]; then
+		build_type=configure_build
+	elif [ -f CMakeLists.txt ]; then
+		build_type=cmake_build
+	elif [ -f setup.py ]; then
+		build_type=python_build
+	elif [ -f Makefile.PL ]; then
+		build_type=perlmodule_build
+	elif [ -f Makefile ] || [ -f makefile ] || [ -f GNUmakefile ]; then
+		build_type=makefile_build
+	else
+		msg "failed to detect buildtype"
+		ret 1
+	fi
+}
+
+_makefile_build() {
+	make \
+		PREFIX=/usr \
+		prefix=/usr \
+		SYSCONFDIR=/etc \
+		sysconfdir=/etc \
+		MANDIR=/usr/share/man \
+		mandir=/usr/share/man \
+		LIBDIR=/usr/lib \
+		PKGCONFIGDIR=/usr/lib/pkgconfig
+	make \
+		PREFIX=/usr \
+		prefix=/usr \
+		SYSCONFDIR=/etc \
+		sysconfdir=/etc \
+		MANDIR=/usr/share/man \
+		mandir=/usr/share/man \
+		LIBDIR=/usr/lib \
+		PKGCONFIGDIR=/usr/lib/pkgconfig \
+		DESTDIR=$PKG install
+}
+
+_perlmodule_build() {
+	perl Makefile.PL
+	make
+	make DESTDIR=$PKG install
+}
+
+_cmake_build() {
+	mkdir -p cmakebuild
+	cd cmakebuild
+	cmake \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_SYSCONFDIR=/etc \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+		-DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
+		-DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
+		$build_opt \
+		-B build ..
+	if [ -f build.ninja ]; then
+		ninja
+		DESTDIR=$PKG ninja install
+	else
+		cmake --build build
+		DESTDIR=$PKG cmake --install build
+	fi
+}
+
+_python_build() {
+	python3 setup.py build
+	python3 setup.py install --prefix=/usr --root=$PKG --optimize=1 $build_opt
+}
+
+_configure_build() {
+	./configure \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--localstatedir=/var \
+		--libdir=/usr/lib \
+		--infodir=/usr/share/info \
+		--mandir=/usr/share/man \
+		$build_opt
+	make
+	make DESTDIR=$PKG install
+}
+
+_meson_build() {
+	meson setup \
+		-Dprefix=/usr \
+		-Dlibdir=/usr/lib \
+		-Dincludedir=/usr/include \
+		-Ddatadir=/usr/share \
+		-Dmandir=/usr/share/man \
+		-Dinfodir=/usr/share/info \
+		-Dlocaledir=/usr/share/locale \
+		-Dsysconfdir=/etc \
+		-Dlocalstatedir=/var \
+		-Dsharedstatedir=/var/lib \
+		-Dbuildtype=plain \
+		-Dauto_features=auto \
+		-Dwrap_mode=nodownload \
+		-Db_lto=true \
+		-Db_pie=true \
+		$build_opt \
+		build
+	ninja -C build
+	DESTDIR=$PKG meson install -C build
+}
+
+_muon_build() {
+	muon setup \
+		-Dprefix=/usr \
+		-Dlibdir=/usr/lib \
+		-Dincludedir=/usr/include \
+		-Ddatadir=/usr/share \
+		-Dmandir=/usr/share/man \
+		-Dinfodir=/usr/share/info \
+		-Dlocaledir=/usr/share/locale \
+		-Dsysconfdir=/etc \
+		-Dlocalstatedir=/var \
+		-Dsharedstatedir=/var/lib \
+		-Dbuildtype=plain \
+		-Dauto_features=auto \
+		-Dwrap_mode=nodownload \
+		-Ddefault_library=shared \
+		-Db_lto=true \
+		-Db_pie=true \
+		$build_opt \
+		build
+	samu -C build
+	DESTDIR=$PKG muon -C build install -d "$PKG"
+}
+
+apply_patch() {
+	if [ "$skip_patch" ]; then
+		unset skip_patch
+		return 0
+	fi
+	[ "$source" ] || return 0
+	for _p in $source; do
+		case ${_p%::noextract} in
+			*::*) _pn=${_p%::*} ;;
+			*) _pn=${_p##*/} ;;
+		esac
+		case $_pn in
+			*.patch|*.diff)
+				msg "applying patch '$_pn'."
+				patch ${patch_opt:--p1} -i "$SRC/$_pn" || {
+					msg "failed to apply patch '$_pn'."
+					ret 1
+				} ;;
+		esac
+	done
+}
+
+build_src() {
+	cd "$SRC"
+
+	if [ "$build_dir" ]; then
+		if [ ! -d "$build_dir" ]; then
+			msg "source directory '$build_dir' not found."
+			ret 1
+		fi
+	elif [ -d "$name-$version" ]; then
+		build_dir=$name-$version
+	elif [ -d "$(ls -1d */ 2>/dev/null | head -n1)" ]; then
+		build_dir=$(ls -1d */ 2>/dev/null | head -n1)
+		build_dir=${build_dir%/}
+	fi
+
+	if [ "$build_dir" ]; then
+		cd "$build_dir"
+	fi
+
+	[ "$rebuild_mode" ] || apply_patch
+
+	export CARGO_HOME=${CARGO_HOME:-$SRC/.cargo}
+	export GOCACHE=${GOCACHE:-$SRC/.go}
+	export DESTDIR=$PKG
+	export DEST_DIR=$PKG
+	export INSTALLROOT=$PKG
+	export install_root=$PKG
+	export INSTALL_ROOT=$PKG
+
+	if [ ! "$source" ]; then
+		mkdir -p $PKG/usr
+	elif [ "$rebuild_mode" ] && command -v rebuild >/dev/null; then
+		(set -e -x; rebuild)
+		buildstatus rebuild
+	elif command -v build >/dev/null; then
+		(set -e -x; build)
+		buildstatus build
+	else
+		if command -v prebuild >/dev/null; then
+			(set -e -x; prebuild)
+			buildstatus prebuild
+		fi
+		if [ ! "${build_type}" ]; then
+			detect_buildtype
+		fi
+		(set -e -x; "_${build_type}")
+		buildstatus "$build_type"
+		if command -v postbuild >/dev/null; then
+			(set -e -x; postbuild)
+			buildstatus postbuild
+		fi
+	fi
+
+	msg "build $name-$version-$release success"
+
+	if [ -d $PKG/usr/share/man ]; then
+		for _m in $PKG/usr/share/man/*; do
+			case ${_m##*/} in
+				man[1-8] | man[1-8]p) continue ;;
+			esac
+			rm -rf "$_m"
+		done
+		find $PKG/usr/share/man -type f | while IFS= read -r _i; do
+			[ "$_i" = "${_i%%.gz}" ] || continue
+			gzip -9 "$_i"
+		done
+		find $PKG/usr/share/man -type l | while IFS= read -r _i; do
+			[ "$_i" = "${_i%%.gz}" ] || continue
+			ln -s "$(readlink "$_i").gz" "${_i%.gz}.gz"
+			rm "$_i"
+		done
+	fi
+
+	if [ -d $PKG/usr/share/info ]; then
+		rm -f $PKG/usr/share/info/dir
+		find $PKG/usr/share/info -type f -exec gzip -9 {} \;
+	fi
+
+	find $PKG -name "fonts.dir" -exec rm {} \;
+	find $PKG -name "fonts.scale" -exec rm {} \;
+	find $PKG -name "perllocal.pod" -exec rm {} \;
+	find $PKG -name "charset.alias" -exec rm {} \;
+
+	if [ ! "$keep_static" ]; then
+		find $PKG -name "*.a" -exec rm {} \;
+	fi
+
+	if [ ! "$keep_libtool" ]; then
+		find $PKG -name "*.la" -exec rm {} \;
+	fi
+
+	if [ ! "$keep_locale" ]; then
+		rm -rf $PKG/usr/share/locale
+		rm -rf $PKG/usr/lib/locale
+	fi
+
+	if [ ! "$keep_doc" ]; then
+		rm -rf $PKG/usr/share/doc
+		rm -rf $PKG/usr/doc
+	fi
+
+	if [ ! "$no_strip" ]; then
+		find $PKG -type f -exec file {} + | while read -r _line; do
+			_f=${_line%%: *}
+			case $_line in
+				*ELF*executable*) ${CROSS_COMPILE}strip --strip-all "$_f" 2>/dev/null ;;
+				*ELF*shared\ object*) ${CROSS_COMPILE}strip --strip-unneeded "$_f" 2>/dev/null ;;
+				*current\ ar\ archive*) ${CROSS_COMPILE}strip --strip-debug "$_f" 2>/dev/null ;;
+			esac
+		done
+	fi
+
+	for _s in $sv; do
+		[ -f "$SRC/$_s" ] || { msg "runit service file '$SRC/$_s' not found."; ret 1; }
+		case $_s in
+			run)
+				install -Dm755 "$SRC/$_s" $PKG/etc/sv/$name/run
+				ln -s ../../../run/runit/supervise.$name $PKG/etc/sv/$name/supervise ;;
+			finish)
+				install -Dm755 "$SRC/$_s" $PKG/etc/sv/$name/finish ;;
+			*.run)
+				install -Dm755 "$SRC/$_s" $PKG/etc/sv/${_s%.*}/run
+				ln -s ../../../run/runit/supervise.${_s%.*} $PKG/etc/sv/${_s%.*}/supervise ;;
+			*.finish)
+				install -Dm755 "$SRC/$_s" $PKG/etc/sv/${_s%.*}/finish ;;
+			*.*)
+				install -Dm644 "$SRC/$_s" $PKG/etc/sv/${_s%%.*}/${_s#*.} ;;
+			*)
+				install -Dm644 "$SRC/$_s" $PKG/etc/sv/$name/$_s ;;
+		esac
+	done
+
+	if [ ! "$(ls -1 $PKG)" ]; then
+		msg "\$PKG is empty"
+		ret 1
+	fi
+
+	cd "$PKG"
+	"$AMU_BIN" -b "$packagefile" || {
+		msg "failed packaging $packagefile"
+		ret 1
+	}
+	cd "$HERE"
+
+	if [ ! -f "$amu_list" ] || [ -n "$(find "$amu_build" -newer "$amu_list")" ]; then
+		pkg_updatefiles
+	fi
+
+	[ "$safely_rebuildable" ] || remove_workdir
+}
+
+pkg_updatefiles() {
+	if [ ! -f "$packagefile" ]; then
+		msg "package '$packagefile' not found."
+		ret 1
+	fi
+	msg "filelist updated."
+	tar -tvf "$packagefile" | awk '{$3=$4=$5=""; print $0}' | sort -k 3 > "$amu_list"
+}
+
+pkg_path() {
+	for _p in "$@"; do
+		amu_recipe_dir "$_p"
+	done
+}
+
+pkg_search() {
+	_pattern=
+	if [ "$pkg" ]; then
+		for _p in $pkg; do
+			_pattern="$_pattern -e $_p"
+		done
+		_grep="grep$_pattern"
+	else
+		_grep=cat
+	fi
+	for _d in $(amu_all_recipes); do
+		_name=${_d##*/}
+		if printf '%s\n' "$_name" | $_grep >/dev/null 2>&1; then
+			if [ "$verbose" ]; then
+				_ver=$( ( . "$_d/abuild" 2>/dev/null; printf '%s' "$version" ) )
+				printf '%s %s\n' "$_name" "$_ver"
+			else
+				printf '%s\n' "$_name"
+			fi
+		fi
+	done
+}
+
+printsource() {
+	for _ps in $source; do
+		_ps=${_ps%::noextract}
+		case $_ps in
+			*::*) _sn=${_ps%::*} ;;
+			*) _sn=${_ps##*/} ;;
+		esac
+		case ${_ps#*::} in
+			*/*) printf '%s\n' "$AMU_SOURCE_DIR/$_sn" ;;
+			*) printf '%s\n' "$HERE/$_sn" ;;
+		esac
+	done
+}
+
+checksource() {
+	for _cs in $(printsource); do
+		[ -f "$_cs" ] || {
+			msg "source file '$_cs' not found."
+			failed=1
+		}
+	done
+	[ "$failed" ] && ret 1
+}
+
+printcsum() {
+	for _pc in $(printsource); do
+		[ -f "$_pc" ] || continue
+		$AMU_SHA "$_pc" | sed "s,$AMU_SOURCE_DIR/,,;s,$HERE/,," 2>/dev/null
+	done | sort -k 2
+}
+
+gencsum() {
+	checksource
+	rm -f "$amu_csum"
+	printcsum > "$amu_csum"
+	msg "${amu_csum##*/} file updated."
+}
+
+checksum_src() {
+	amu_needsha
+	if [ ! -s "$amu_csum" ]; then
+		gencsum
+	else
+		printcsum > "${amu_csum}.tmp"
+		diff -U 0 "$amu_csum" "${amu_csum}.tmp" | \
+			sed '/---/d;/+++/d;/@@/d' | \
+			sed 's/^+/ new    : /' | \
+			sed 's/^-/ missing: /' > "${amu_csum}.diff"
+		if [ -s "${amu_csum}.diff" ]; then
+			cat "${amu_csum}.diff"
+			msg "checksum failed."
+			failed=1
+		fi
+		rm -f "${amu_csum}.tmp" "${amu_csum}.diff"
+		[ "$failed" ] && ret 1
+	fi
+}
+
+runscript() {
+	if [ -f "${1}install" ]; then
+		msg "running ${1}install script..."
+		if [ "$AMU_ROOT" != "/" ]; then
+			cat "./${1}install" > "${AMU_ROOT%/}"/.amu-runscript
+			chmod +x "${AMU_ROOT%/}"/.amu-runscript
+			chroot "${AMU_ROOT%/}" /.amu-runscript
+			rm -f "${AMU_ROOT%/}"/.amu-runscript
+		else
+			sh "./${1}install"
+		fi
+	fi
+}
+
+parsesubopt() {
+	shift
+	while [ "$1" ]; do
+		case $1 in
+			-*) break ;;
+			*) printf '%s\n' "$1" ;;
+		esac
+		shift
+	done
+}
+
+updateopts() {
+	while [ "$1" ]; do
+		case $1 in
+			-*) newopt="$newopt $1" ;;
+		esac
+		shift
+	done
+	printf '%s\n' "$newopt"
+}
+
+parseopts() {
+	while [ "$1" ]; do
+		case $1 in
+			-i) install=1 ;;
+			-u) upgrade=1 ;;
+			-f) forcerebuild=1 ;;
+			-w) downloadonly=1 ;;
+			-g) updatecsum=1 ;;
+			-k) updatefiles=1 ;;
+			-s) search=1 ;;
+			-v) verbose=1 ;;
+			-p) pkg_path "$(parsesubopt "$@")"; exit 0 ;;
+			-h) amu_src_help; exit 0 ;;
+			-*) msg "invalid option '$1'"; exit 1 ;;
+			*) pkg="$pkg $1" ;;
+		esac
+		shift
+	done
+}
+
+amu_src_help() {
+	cat << EOF
+usage: amu-src <option> [arg(s)]
+
+options:
+  -i [pkg(s)]  build and install package(s) (via amu-bin)
+  -u [pkg(s)]  rebuild and upgrade package(s) (via amu-bin)
+  -f           force rebuild
+  -w [pkg(s)]  download source only
+  -p <pkg(s)>  print package recipe path
+  -g [pkg(s)]  update package checksum (.shasum)
+  -k [pkg(s)]  update package files (.files)
+  -s [pattern] search packages in repos
+  -v           be verbose (with -s)
+  -h           print this help message
+
+dependency queries (-d -dd -D -DD -j -jj) are handled by amu-resolv;
+binary package operations by amu-bin; see amu(8).
+
+environment variables:
+  AMU_REPO           recipe repository directories
+  AMU_PACKAGE_DIR    directory for built .spm files (default: \$PWD)
+  AMU_SOURCE_DIR     directory for source tarballs (default: \$PWD)
+  AMU_WORK_DIR       directory for build working tree (default: \$PWD)
+  AMU_ROOT           alternative install root (default: /)
+  AMU_NOPROMPT       skip confirmation prompt
+  AMU_KEEP_WORKDIR   keep work directory on build failure
+  AMU_LOG            enable build logging
+  AMU_LOG_DIR        log file directory (\$name.log)
+  CFLAGS             C compiler flags (cmake build system)
+  CXXFLAGS           C++ compiler flags (cmake build system)
+  CROSS_COMPILE      prefix for strip command
+
+EOF
+	exit 0
+}
+
+main() {
+	_args="$*"
+	parseopts "$@"
+	set -- $(updateopts "$@")
+
+	if [ "$search" ]; then
+		pkg_search "$@"
+		exit 0
+	fi
+
+	for _d in $AMU_PACKAGE_DIR $AMU_SOURCE_DIR $AMU_WORK_DIR; do
+		[ -d "$_d" ] || { msg "directory '$_d' not exist"; exit 1; }
+		[ -w "$_d" ] || { msg "directory '$_d' dont have write access"; exit 1; }
+	done
+
+	if [ "$pkg" ]; then
+		for _p in $pkg; do
+			if ! amu_recipe_dir "$_p" >/dev/null 2>&1; then
+				msg "package '$_p' not found"
+				continue
+			fi
+			(cd "$(amu_recipe_dir "$_p")" && "$AMU_SRC" "$@") || exit 1
+		done
+		exit 0
+	fi
+
+	if [ ! -f "$amu_build" ]; then
+		msg "'abuild' not found."
+		exit 1
+	fi
+
+	. "$amu_build"
+	[ "$name" ]    || die "name is empty"
+	[ "$version" ] || die "version is empty"
+	[ "$release" ] || die "release is empty"
+	[ "$name" = "${PWD##*/}" ] || {
+		msg "'name' should be same as package directory name (${PWD##*/})."
+		exit 1
+	}
+
+	packagefile="$AMU_PACKAGE_DIR/$name#$version-$release.spm"
+
+	if [ "$install" ] && amu_is_installed "$name"; then
+		msg "package '$name' already installed."
+		exit 0
+	fi
+
+	if [ "$upgrade" ] && ! amu_is_installed "$name"; then
+		msg "package '$name' not installed."
+		exit 1
+	fi
+
+	if [ "$updatecsum" ]; then
+		gencsum
+		exit 0
+	fi
+
+	if [ "$downloadonly" ]; then
+		fetch_src
+		exit 0
+	fi
+
+	if [ "$updatefiles" ]; then
+		pkg_updatefiles
+		exit 0
+	fi
+
+	if [ "$(id -u)" != 0 ]; then
+		msg "packages need to build as root. aborted."
+		exit 1
+	fi
+
+	if [ -f "$packagefile" ] && [ ! "$forcerebuild" ]; then
+		if [ ! "$install" ] && [ ! "$upgrade" ]; then
+			msg "package '$packagefile' found."
+		fi
+	else
+		if [ "$AMU_LOG" ] && [ -z "$AMU_LOG_ACTIVE" ]; then
+			[ -d "$AMU_LOG_DIR" ] || die "AMU_LOG_DIR ($AMU_LOG_DIR) not found"
+			export AMU_LOG_ACTIVE=1
+			msg "logging to $AMU_LOG_DIR/$name.log"
+			exec "$AMU_SRC" $_args >> "$AMU_LOG_DIR/$name.log" 2>&1
+		fi
+		if [ "$install" ] || [ "$upgrade" ]; then
+			runscript pre
+		fi
+		fetch_src
+		checksum_src
+		extract_src
+		printf '%s\n' "$version-$release" > "$HERE/.amu-version"
+		build_src
+	fi
+
+	if [ "$install" ]; then
+		AMU_SKIP_PREINSTALL=1 "$AMU_BIN" -i "$packagefile" || exit $?
+	elif [ "$upgrade" ]; then
+		AMU_SKIP_PREINSTALL=1 "$AMU_BIN" -u "$packagefile" || exit $?
+	fi
+}
+
+umask 022
+
+export HERE="$PWD"
+
+amu_build=$HERE/abuild
+amu_csum=$HERE/.shasum
+amu_list=$HERE/.files
+
+case $0 in
+	/*) AMU_SRC=$0 ;;
+	*) AMU_SRC=$(realpath "$0" 2>/dev/null || printf '%s' "$PWD/$0") ;;
+esac
+
+main "$@"
+
+exit 0

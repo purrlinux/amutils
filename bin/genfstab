@@ -1,0 +1,90 @@
+#!/bin/sh
+#
+# genfstab - generate fstab(5) lines from a mounted system
+# (C) 2026 Atarwn Gard <atarwn@qwaderton.org>
+# inspired by autils by emmett1
+# MIT License
+#
+
+IDENT=UUID
+PSEUDO=0
+ROOT=/
+
+for _a; do
+	case $_a in
+		-U) IDENT=UUID ;;
+		-L) IDENT=LABEL ;;
+		-s) PSEUDO=1 ;;
+		-h)
+			printf 'usage: %s [-U|-L|-s] [root]\n' "${0##*/}"
+			printf ' -U  use UUIDs (default)\n -L  use labels\n -s  print pseudo filesystems\n'
+			exit 0 ;;
+		-*) printf '%s\n' "error: invalid option '$_a'" >&2; exit 1 ;;
+		*) ROOT=${_a%/} ;;
+	esac
+done
+
+[ -r /proc/self/mounts ] || { printf '%s\n' "error: cannot read /proc/self/mounts" >&2; exit 1; }
+
+dev_seen=
+while read -r _dev _mnt _type _opts _rest; do
+	_mnt=$(printf '%s\n' "$_mnt" | sed 's/\\040/ /g')
+
+	# keep only mounts under the requested root
+	case $_mnt in
+		"$ROOT") _target=/ ;;
+		"$ROOT"/*) _target=${_mnt#"$ROOT"} ;;
+		*) continue ;;
+	esac
+
+	# pseudo filesystems
+	case $_type in
+		proc|sysfs|devpts|tmpfs|devtmpfs|cgroup|cgroup2|mqueue|debugfs| \
+		tracefs|securityfs|pstore|bpf|configfs|hugetlbfs|ramfs|fusectl| \
+		binfmt_misc|autofs|overlay|rootfs|efivarfs|nsfs|fuse.*)
+			[ "$PSEUDO" = 1 ] || continue ;;
+	esac
+
+	# skip the root filesystem of the host when scanning a chroot
+	if [ "$ROOT" != "/" ] && [ "$_mnt" = "/" ]; then
+		continue
+	fi
+
+	# bind mount: device already seen
+	_bind=
+	case " $dev_seen " in
+		*" $_dev "*) _bind=1 ;;
+	esac
+	dev_seen="$dev_seen $_dev"
+
+	if [ "$_bind" ]; then
+		printf 'none\t%s\tnone\tbind\t0\t0\n' "$_target"
+		continue
+	fi
+
+	# resolve block device identifiers
+	case $_dev in
+		/dev/*)
+			if [ "$IDENT" = UUID ]; then
+				_id=$(blkid -s UUID -o value "$_dev" 2>/dev/null)
+				[ "$_id" ] && _dev="UUID=$_id"
+			else
+				_id=$(blkid -s LABEL -o value "$_dev" 2>/dev/null)
+				[ "$_id" ] && _dev="LABEL=$_id"
+			fi ;;
+	esac
+
+	_pass=0
+	case $_type in
+		ext2|ext3|ext4|xfs|btrfs)
+			if [ "$_target" = "/" ]; then
+				_pass=1
+			else
+				_pass=2
+			fi ;;
+	esac
+
+	printf '%s\t%s\t%s\tdefaults\t0\t%s\n' "$_dev" "$_target" "$_type" "$_pass"
+done < /proc/self/mounts
+
+exit 0
