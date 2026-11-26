@@ -1,4 +1,3 @@
-
 #!/bin/sh
 #
 # qlchroot - enter a chroot with virtual filesystems mounted
@@ -7,24 +6,10 @@
 #
 
 KEEP=
-TARGET=
-READY=0
-
-M_DEV=0
-M_DEVPTS=0
-M_PTMX=0
-M_PROC=0
-M_SYS=0
-M_EFIVARS=0
-M_RUN=0
-
-RESOLV_ACTIVE=0
-RESOLV_SAVED=0
-RESOLV_BACKUP=
 
 usage() {
     printf 'usage: %s [-k] <chroot-dir> [command [args...]]\n' "${0##*/}"
-    printf '  -k  keep mounts after the command exits\n'
+    printf '  -k  keep mounts after exit\n'
     printf '  -h  show this help\n'
 }
 
@@ -35,40 +20,6 @@ err() {
 die() {
     err "$*"
     exit 1
-}
-
-try_umount() {
-    if ! umount "$1" 2>/dev/null; then
-        err "warning: could not unmount $1"
-    fi
-}
-
-cleanup() {
-    status=$?
-    trap - 0 HUP INT TERM
-
-    if [ "$RESOLV_ACTIVE" = 1 ]; then
-        rm -f "$TARGET/etc/resolv.conf"
-
-        if [ "$RESOLV_SAVED" = 1 ]; then
-            mv "$RESOLV_BACKUP" "$TARGET/etc/resolv.conf" ||
-                err "warning: could not restore resolv.conf"
-        fi
-    fi
-
-    # Always clean up an incomplete setup.
-    # -k applies only after all mounts have succeeded.
-    if [ -z "$KEEP" ] || [ "$READY" != 1 ]; then
-        [ "$M_RUN" = 1 ] && try_umount "$TARGET/run"
-        [ "$M_EFIVARS" = 1 ] && try_umount "$TARGET/sys/firmware/efi/efivars"
-        [ "$M_SYS" = 1 ] && try_umount "$TARGET/sys"
-        [ "$M_PROC" = 1 ] && try_umount "$TARGET/proc"
-        [ "$M_PTMX" = 1 ] && try_umount "$TARGET/dev/ptmx"
-        [ "$M_DEVPTS" = 1 ] && try_umount "$TARGET/dev/pts"
-        [ "$M_DEV" = 1 ] && try_umount "$TARGET/dev"
-    fi
-
-    exit "$status"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -102,8 +53,8 @@ done
 }
 
 TARGET=$(realpath "$1") || die "cannot resolve chroot directory"
-[ -d "$TARGET" ] || die "directory does not exist: $TARGET"
-[ "$TARGET" != / ] || die "refusing to use / as chroot"
+[ -d "$TARGET" ] || die "directory '$TARGET' does not exist"
+[ "$TARGET" != / ] || die "refusing to chroot into /"
 
 shift
 
@@ -111,25 +62,80 @@ if [ "$#" -eq 0 ]; then
     set -- /bin/sh
 fi
 
-ENV=$(command -v env) || die "env is required on the host"
-CHROOT=$(command -v chroot) || die "chroot is required on the host"
+ENV=$(command -v env) || die "env not found"
+CHROOT=$(command -v chroot) || die "chroot not found"
 
 command -v mountpoint >/dev/null 2>&1 ||
-    die "mountpoint is required on the host"
+    die "mountpoint not found"
 
-[ -d /dev/pts ] || die "host /dev/pts is unavailable"
-[ -e /dev/ptmx ] || die "host /dev/ptmx is unavailable"
+# Mount state
+M_DEV=0
+M_PROC=0
+M_SYS=0
+M_EFIVARS=0
+M_RUN=0
 
-# Do not blindly unmount anything left by another invocation.
-for path in "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/dev/ptmx" \
-            "$TARGET/proc" "$TARGET/sys" "$TARGET/run"; do
+RESOLV_ACTIVE=0
+RESOLV_SAVED=0
+RESOLV_BACKUP="$TARGET/etc/.resolv.conf.qlchroot.$$"
+
+READY=0
+
+umount_one() {
+    path=$1
+    mounted=$2
+
+    if [ "$mounted" = 1 ]; then
+        if ! umount "$path"; then
+            err "warning: could not unmount $path"
+        fi
+    fi
+}
+
+cleanup() {
+    status=$?
+
+    trap - 0 HUP INT TERM
+
+    if [ "$RESOLV_ACTIVE" = 1 ]; then
+        rm -f "$TARGET/etc/resolv.conf"
+
+        if [ "$RESOLV_SAVED" = 1 ]; then
+            mv "$RESOLV_BACKUP" "$TARGET/etc/resolv.conf" ||
+                err "warning: could not restore resolv.conf"
+        fi
+    fi
+
+    if [ -z "$KEEP" ] || [ "$READY" != 1 ]; then
+        umount_one "$TARGET/run" "$M_RUN"
+        umount_one "$TARGET/sys/firmware/efi/efivars" "$M_EFIVARS"
+        umount_one "$TARGET/sys" "$M_SYS"
+        umount_one "$TARGET/proc" "$M_PROC"
+        umount_one "$TARGET/dev" "$M_DEV"
+    fi
+
+    exit "$status"
+}
+
+# Check mountpoints before changing anything.
+for path in \
+    "$TARGET/dev" \
+    "$TARGET/proc" \
+    "$TARGET/sys" \
+    "$TARGET/run" \
+    "$TARGET/sys/firmware/efi/efivars"
+do
     if [ -e "$path" ] && mountpoint -q "$path"; then
-        die "$path is already a mountpoint; inspect it first"
+        die "$path is already mounted"
     fi
 done
 
-mkdir -p "$TARGET/dev/pts" "$TARGET/proc" "$TARGET/sys" \
-    "$TARGET/run" "$TARGET/etc" ||
+# Prepare mountpoint directories.
+mkdir -p \
+    "$TARGET/dev" \
+    "$TARGET/proc" \
+    "$TARGET/sys" \
+    "$TARGET/run" ||
     die "cannot create mountpoint directories"
 
 trap cleanup 0
@@ -142,40 +148,12 @@ mount --bind /dev "$TARGET/dev" ||
     die "cannot bind /dev"
 M_DEV=1
 
-# Private PTY instance
-mount -t devpts devpts "$TARGET/dev/pts" \
-    -o nosuid,noexec,newinstance,gid=5,mode=620,ptmxmode=0666 ||
-    die "cannot mount devpts"
-M_DEVPTS=1
-
-# Redirect /dev/ptmx to the new instance.
-if [ -L "$TARGET/dev/ptmx" ]; then
-    PTMX_LINK=$(readlink "$TARGET/dev/ptmx") ||
-        die "cannot read /dev/ptmx symlink"
-
-    case "$PTMX_LINK" in
-        pts/ptmx|/dev/pts/ptmx)
-            :
-            ;;
-        *)
-            die "unexpected /dev/ptmx symlink: $PTMX_LINK"
-            ;;
-    esac
-else
-    [ -e "$TARGET/dev/ptmx" ] ||
-        die "/dev/ptmx is missing"
-
-    mount --bind "$TARGET/dev/pts/ptmx" "$TARGET/dev/ptmx" ||
-        die "cannot bind devpts multiplexer"
-    M_PTMX=1
-fi
-
-# proc
+# /proc
 mount -t proc proc "$TARGET/proc" ||
     die "cannot mount proc"
 M_PROC=1
 
-# sysfs
+# /sys
 mount -t sysfs sysfs "$TARGET/sys" ||
     die "cannot mount sysfs"
 M_SYS=1
@@ -192,10 +170,10 @@ fi
 # /run
 mount -t tmpfs tmpfs "$TARGET/run" \
     -o mode=755,nosuid,nodev ||
-    die "cannot mount tmpfs on /run"
+    die "cannot mount /run"
 M_RUN=1
 
-# Recreate /dev/shm target if it points into /run.
+# Restore /dev/shm target if it is a symlink.
 if [ -L "$TARGET/dev/shm" ]; then
     SHM_TARGET=$(readlink "$TARGET/dev/shm") ||
         die "cannot read /dev/shm symlink"
@@ -206,28 +184,24 @@ if [ -L "$TARGET/dev/shm" ]; then
     esac || die "cannot create /dev/shm target"
 fi
 
-# Temporarily provide host resolv.conf.
-RESOLV_BACKUP="$TARGET/etc/.resolv.conf.qlchroot.$$"
-
-if [ -e "$TARGET/etc/resolv.conf" ] ||
-   [ -L "$TARGET/etc/resolv.conf" ]; then
-    mv "$TARGET/etc/resolv.conf" "$RESOLV_BACKUP" ||
-        die "cannot save chroot resolv.conf"
-
-    RESOLV_SAVED=1
-    RESOLV_ACTIVE=1
-fi
-
+# Provide host DNS configuration.
 if [ -f /etc/resolv.conf ]; then
-    cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf" ||
-        die "cannot copy host resolv.conf"
+    if [ -e "$TARGET/etc/resolv.conf" ] ||
+       [ -L "$TARGET/etc/resolv.conf" ]; then
+        mv "$TARGET/etc/resolv.conf" "$RESOLV_BACKUP" ||
+            die "cannot save resolv.conf"
+        RESOLV_SAVED=1
+    fi
 
     RESOLV_ACTIVE=1
+
+    cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf" ||
+        die "cannot copy resolv.conf"
 fi
 
 READY=1
 
-# env runs on the host, not inside the chroot.
+# Execute env on the host, not inside chroot.
 "$ENV" -i \
     HOME=/root \
     TERM="${TERM:-linux}" \
