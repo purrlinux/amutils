@@ -10,7 +10,7 @@
 # manually after low-level system changes.
 #
 
-. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+. "${AMU_LIB:-/usr/lib/libam.sh}"
 AMU_PROG=amu-trigger
 
 _trigger_fccache() {

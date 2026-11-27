@@ -12,7 +12,7 @@
 # .spm.${AMU_SHA} sidecar checksums.
 #
 
-. "${AMU_LIB:-/usr/lib/amu/libam.sh}"
+. "${AMU_LIB:-/usr/lib/libam.sh}"
 AMU_PROG=amu-bin
 
 amu_spm() {

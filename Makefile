@@ -1,6 +1,6 @@
 PREFIX  ?= /usr
 BINDIR  ?= $(PREFIX)/bin
-LIBDIR  ?= $(PREFIX)/lib/amu
+LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man/man8
 DOCDIR  ?= $(PREFIX)/share/doc/amutils
 
